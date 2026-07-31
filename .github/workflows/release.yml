@@ -10,7 +10,7 @@ on:
       force:
         description: Replace the release if it already exists
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
@@ -84,8 +84,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORCE: ${{ inputs.force }}
         run: |
-          # Tag pushes carry no inputs, so re-running one replaces by default.
-          force="${FORCE:-true}"
+          # Tag pushes carry no inputs; default to the same "don't clobber"
+          # behaviour as an unticked box.
+          force="${FORCE:-false}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             if [ "$force" != "true" ]; then
               echo "::error::release ${TAG} already exists (re-run with \"force\" enabled to replace it)"
@@ -107,10 +108,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          # Move the tag with git rather than letting the releases API create
+          # the ref: creating a release against an existing tag is the path
+          # that already works for the versioned release above.
+          git tag -f latest "${TAG}^{commit}"
+          git push -f origin refs/tags/latest
+
+          gh release delete latest --yes 2>/dev/null || true
           gh release create latest \
             bin/viewmd-* bin/SHA256SUMS \
-            --target "$(git rev-parse HEAD)" \
             --title "Latest (${TAG})" \
             --latest=false \
             --notes "Rolling release: always the newest tagged build, currently [\`${TAG}\`](../../releases/tag/${TAG}).

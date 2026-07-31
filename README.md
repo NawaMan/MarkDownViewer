@@ -127,9 +127,9 @@ checks out that tag so it builds the tagged commit rather than whatever the
 dispatch ref points at. It fails with a clear message if the tag does not exist
 yet.
 
-Re-running a release is safe: an existing release for the tag is replaced (the
-git tag itself is left alone). Untick **force** on a manual run to fail instead
-of overwriting.
+If a release for the tag already exists the run stops rather than overwriting
+it. Tick **force** on a manual run to replace it instead; that deletes and
+recreates the release, leaving the git tag itself alone.
 
 Each run also refreshes a rolling `latest` release holding the same binaries,
 so download URLs never need editing:
