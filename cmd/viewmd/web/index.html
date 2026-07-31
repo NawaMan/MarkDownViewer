@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>viewmd</title>
+<script src="/vendor/marked.umd.js"></script>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0;
+  --code-bg: #f6f8fa; --table-alt: #f6f8fa; --link: #0969da;
+  --panel: #f6f8fa; --accent: #0969da; --sel: #ddf4ff; --danger: #cf222e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
+    --code-bg: #151b23; --table-alt: #151b23; --link: #4493f8;
+    --panel: #151b23; --accent: #4493f8; --sel: #12263a; --danger: #ff7b72;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex; flex-direction: column;
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  font-size: 15px; line-height: 1.55;
+}
+header {
+  display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+  padding: .55rem .9rem; border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+}
+header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+header .meta { color: var(--muted); font-size: .85rem; flex: 1; min-width: 8rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header .meta strong { color: var(--fg); }
+#layout { display: flex; flex: 1; min-height: 0; }
+#sidebar {
+  width: var(--sidebar-w, 16.5rem);
+  min-width: 8rem;
+  max-width: none;
+  flex: 0 0 auto;
+  border-right: 0;
+  background: var(--panel);
+  overflow-x: auto;
+  overflow-y: auto;
+  padding: .5rem 0;
+  /* Firefox */
+  scrollbar-gutter: stable;
+}
+#sidebar-resizer {
+  flex: 0 0 5px;
+  width: 5px;
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  z-index: 2;
+  touch-action: none;
+  user-select: none;
+}
+#sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -3px; right: -3px; /* wider hit target */
+}
+#sidebar-resizer:hover,
+#sidebar-resizer.dragging,
+body.sidebar-resizing #sidebar-resizer {
+  background: var(--accent);
+}
+body.sidebar-resizing { cursor: col-resize; user-select: none; }
+body.sidebar-resizing iframe,
+body.sidebar-resizing #content { pointer-events: none; }
+#sidebar h2 {
+  font-size: .7rem; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); margin: .4rem .85rem; font-weight: 600;
+}
+#tree { list-style: none; margin: 0; padding: 0; width: max-content; min-width: 100%; }
+#tree li { margin: 0; }
+#tree ul { list-style: none; margin: 0; padding: 0; width: max-content; min-width: 100%; }
+#tree button.file {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  text-align: left; border: 0; background: transparent;
+  color: var(--fg); font: inherit; font-size: .88rem; padding: .28rem .85rem;
+  cursor: pointer; border-left: 3px solid transparent;
+  white-space: nowrap;
+}
+#tree button.file:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+#tree button.file.active {
+  background: var(--sel); border-left-color: var(--accent); font-weight: 600;
+}
+#tree .dir-label {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  padding: .35rem .85rem .15rem; font-size: .75rem;
+  color: var(--muted); font-weight: 600;
+  white-space: nowrap;
+}
+#main { flex: 1; overflow: auto; padding: 1.25rem 1.5rem 4rem; }
+#main .empty { color: var(--muted); max-width: 36rem; }
+#content { max-width: 52rem; }
+#err {
+  display: none; margin: .5rem .9rem 0; padding: .65rem .85rem;
+  border: 1px solid var(--danger); color: var(--danger); border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg)); font-size: .9rem;
+}
+#err:not(:empty) { display: block; }
+
+h1, h2, h3, h4 { line-height: 1.25; margin: 1.6rem 0 .75rem; font-weight: 600; }
+#content h1 { font-size: 1.75rem; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+#content h2 { font-size: 1.35rem; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+#content h3 { font-size: 1.15rem; }
+#content h1:first-child { margin-top: 0; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+p, ul, ol, blockquote, table, pre { margin: 0 0 .9rem; }
+ul, ol { padding-left: 1.6em; }
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 85%; background: var(--code-bg); border-radius: 6px; padding: .15em .35em;
+}
+pre {
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: .85rem; overflow-x: auto; line-height: 1.45;
+}
+pre code { background: none; padding: 0; font-size: 87.5%; white-space: pre; }
+.table-wrap { overflow-x: auto; margin: 0 0 .9rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid var(--border); padding: .4rem .6rem; text-align: left; vertical-align: top; }
+th { background: var(--table-alt); font-weight: 600; }
+tbody tr:nth-child(even) { background: var(--table-alt); }
+blockquote {
+  border-left: .25em solid var(--border); color: var(--muted); padding: 0 .9em; margin-left: 0;
+}
+hr { border: 0; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+img { max-width: 100%; }
+
+@media (max-width: 720px) {
+  #layout { flex-direction: column; }
+  #sidebar {
+    width: 100% !important;
+    max-width: none;
+    max-height: 30vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  #sidebar-resizer { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>viewmd</h1>
+  <span class="meta" id="meta">Loading…</span>
+</header>
+<div id="err" role="alert"></div>
+<div id="layout">
+  <nav id="sidebar" aria-label="Markdown files">
+    <h2>Files</h2>
+    <ul id="tree"></ul>
+  </nav>
+  <div id="sidebar-resizer" role="separator" aria-orientation="vertical"
+       aria-label="Resize file list" tabindex="0"></div>
+  <main id="main">
+    <div class="empty" id="placeholder">Select a Markdown file from the list.</div>
+    <div id="content" hidden></div>
+  </main>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  var treeEl = document.getElementById("tree");
+  var content = document.getElementById("content");
+  var placeholder = document.getElementById("placeholder");
+  var meta = document.getElementById("meta");
+  var errBox = document.getElementById("err");
+  var activePath = null;
+
+  function showError(msg) { errBox.textContent = msg || ""; }
+
+  function slugify(text) {
+    return text.toLowerCase().replace(/[^\w\s-]/g, "").trim().replace(/\s/g, "-");
+  }
+
+  function addHeadingIds(root) {
+    var used = Object.create(null);
+    Array.prototype.forEach.call(root.querySelectorAll("h1,h2,h3,h4,h5,h6"), function (h) {
+      var base = slugify(h.textContent || "");
+      if (!base) return;
+      var id = base;
+      if (used[base] !== undefined) {
+        used[base] += 1;
+        id = base + "-" + used[base];
+      } else {
+        used[base] = 0;
+      }
+      h.id = id;
+    });
+  }
+
+  function wrapTables(root) {
+    Array.prototype.forEach.call(root.querySelectorAll("table"), function (t) {
+      var wrap = document.createElement("div");
+      wrap.className = "table-wrap";
+      t.parentNode.insertBefore(wrap, t);
+      wrap.appendChild(t);
+    });
+  }
+
+  function jumpToHash() {
+    if (!location.hash) return;
+    var el = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (!el) return;
+    var jump = function () { el.scrollIntoView(); };
+    jump();
+    requestAnimationFrame(jump);
+  }
+
+  function setActive(path) {
+    activePath = path;
+    Array.prototype.forEach.call(treeEl.querySelectorAll("button.file"), function (b) {
+      b.classList.toggle("active", b.getAttribute("data-path") === path);
+    });
+  }
+
+  function renderMarkdown(text, path) {
+    showError("");
+    if (typeof marked === "undefined") {
+      showError("Markdown library missing.");
+      return;
+    }
+    content.innerHTML = marked.parse(text, { gfm: true, breaks: false });
+    addHeadingIds(content);
+    wrapTables(content);
+    content.hidden = false;
+    placeholder.hidden = true;
+    setActive(path);
+    document.title = path + " — viewmd";
+    var label = path.split("/").pop();
+    meta.innerHTML = "Showing <strong></strong>";
+    meta.querySelector("strong").textContent = label;
+    // Update URL without reload so refresh keeps the file
+    try {
+      var u = new URL(location.href);
+      u.searchParams.set("md", path);
+      history.replaceState(null, "", u.pathname + u.search + u.hash);
+    } catch (e) { /* ignore */ }
+    jumpToHash();
+  }
+
+  function loadFile(path) {
+    showError("");
+    return fetch("/api/file?path=" + encodeURIComponent(path))
+      .then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { throw new Error(t || r.statusText); });
+        return r.text();
+      })
+      .then(function (text) { renderMarkdown(text, path); })
+      .catch(function (e) {
+        showError("Could not load " + path + ": " + (e && e.message ? e.message : e));
+      });
+  }
+
+  function appendFiles(parentUl, files, dirs, prefix) {
+    files.forEach(function (name) {
+      var path = prefix ? prefix + "/" + name : name;
+      var li = document.createElement("li");
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "file";
+      btn.setAttribute("data-path", path);
+      btn.setAttribute("title", path);
+      btn.textContent = name;
+      btn.addEventListener("click", function () { loadFile(path); });
+      li.appendChild(btn);
+      parentUl.appendChild(li);
+    });
+    Object.keys(dirs).sort().forEach(function (dirName) {
+      var child = dirs[dirName];
+      var pathPrefix = prefix ? prefix + "/" + dirName : dirName;
+      var li = document.createElement("li");
+      var label = document.createElement("span");
+      label.className = "dir-label";
+      label.setAttribute("title", pathPrefix + "/");
+      label.textContent = pathPrefix + "/";
+      li.appendChild(label);
+      var sub = document.createElement("ul");
+      sub.style.listStyle = "none";
+      sub.style.margin = "0";
+      sub.style.padding = "0";
+      appendFiles(sub, child.files || [], child.dirs || {}, pathPrefix);
+      li.appendChild(sub);
+      parentUl.appendChild(li);
+    });
+  }
+
+  function buildTree(nodes) {
+    // nodes: flat list { path, name } or nested { files: [], dirs: { name: node } }
+    treeEl.innerHTML = "";
+    if (nodes && nodes.files) {
+      appendFiles(treeEl, nodes.files || [], nodes.dirs || {}, "");
+      return;
+    }
+    // flat fallback
+    (nodes || []).forEach(function (n) {
+      var li = document.createElement("li");
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "file";
+      btn.setAttribute("data-path", n.path);
+      btn.setAttribute("title", n.path);
+      btn.textContent = n.path;
+      btn.addEventListener("click", function () { loadFile(n.path); });
+      li.appendChild(btn);
+      treeEl.appendChild(li);
+    });
+  }
+
+  function collectPaths(node, prefix, out) {
+    (node.files || []).forEach(function (name) {
+      out.push(prefix ? prefix + "/" + name : name);
+    });
+    var dirs = node.dirs || {};
+    Object.keys(dirs).forEach(function (d) {
+      collectPaths(dirs[d], prefix ? prefix + "/" + d : d, out);
+    });
+  }
+
+  // ── resizable sidebar ──────────────────────────────────
+  var SIDEBAR_KEY = "viewmd.sidebarWidth";
+  var sidebar = document.getElementById("sidebar");
+  var resizer = document.getElementById("sidebar-resizer");
+  var MIN_W = 120;
+  var MAX_FRAC = 0.7;
+
+  function applySidebarWidth(px) {
+    var max = Math.floor(window.innerWidth * MAX_FRAC);
+    px = Math.max(MIN_W, Math.min(max, Math.round(px)));
+    sidebar.style.width = px + "px";
+    document.documentElement.style.setProperty("--sidebar-w", px + "px");
+    return px;
+  }
+
+  function loadSidebarWidth() {
+    try {
+      var saved = localStorage.getItem(SIDEBAR_KEY);
+      if (saved) {
+        var n = parseInt(saved, 10);
+        if (n > 0) applySidebarWidth(n);
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function saveSidebarWidth(px) {
+    try { localStorage.setItem(SIDEBAR_KEY, String(px)); } catch (e) { /* ignore */ }
+  }
+
+  function startResize(clientX) {
+    var startX = clientX;
+    var startW = sidebar.getBoundingClientRect().width;
+    document.body.classList.add("sidebar-resizing");
+    resizer.classList.add("dragging");
+
+    function onMove(e) {
+      var x = e.touches ? e.touches[0].clientX : e.clientX;
+      applySidebarWidth(startW + (x - startX));
+      if (e.cancelable) e.preventDefault();
+    }
+    function onUp() {
+      document.body.classList.remove("sidebar-resizing");
+      resizer.classList.remove("dragging");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onUp);
+      saveSidebarWidth(sidebar.getBoundingClientRect().width);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.addEventListener("touchmove", onMove, { passive: false });
+    document.addEventListener("touchend", onUp);
+  }
+
+  if (resizer) {
+    resizer.addEventListener("mousedown", function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      startResize(e.clientX);
+    });
+    resizer.addEventListener("touchstart", function (e) {
+      if (!e.touches || !e.touches.length) return;
+      startResize(e.touches[0].clientX);
+    }, { passive: true });
+    resizer.addEventListener("keydown", function (e) {
+      var step = e.shiftKey ? 40 : 16;
+      var w = sidebar.getBoundingClientRect().width;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        saveSidebarWidth(applySidebarWidth(w - step));
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        saveSidebarWidth(applySidebarWidth(w + step));
+      }
+    });
+    resizer.addEventListener("dblclick", function () {
+      var px = applySidebarWidth(16.5 * 16); // ~default 16.5rem
+      saveSidebarWidth(px);
+    });
+  }
+  loadSidebarWidth();
+
+  // Shift + mouse wheel → horizontal scroll in the sidebar (and when wheel is over it).
+  // Also map plain horizontal wheel deltas (trackpads) to scrollLeft.
+  if (sidebar) {
+    sidebar.addEventListener("wheel", function (e) {
+      var dx = e.deltaX;
+      var dy = e.deltaY;
+      // Shift+vertical wheel is the common desktop "scroll sideways" gesture.
+      if (e.shiftKey && dy !== 0 && dx === 0) {
+        sidebar.scrollLeft += dy;
+        e.preventDefault();
+        return;
+      }
+      // If the gesture is already horizontal, let the browser handle it unless
+      // we're only getting vertical with shift (covered above).
+      if (e.shiftKey && dx !== 0) {
+        sidebar.scrollLeft += dx;
+        e.preventDefault();
+      }
+    }, { passive: false });
+  }
+
+  function boot() {
+    if (typeof marked === "undefined") {
+      showError("Markdown library failed to load.");
+      return;
+    }
+    Promise.all([
+      fetch("/api/config").then(function (r) { return r.json(); }),
+      fetch("/api/tree").then(function (r) {
+        if (!r.ok) throw new Error("tree " + r.status);
+        return r.json();
+      })
+    ]).then(function (pair) {
+      var cfg = pair[0];
+      var tree = pair[1];
+      meta.textContent = "Folder: " + (cfg.folder || ".");
+      buildTree(tree);
+
+      var want = null;
+      try {
+        var q = new URL(location.href).searchParams.get("md");
+        if (q) want = q;
+      } catch (e) { /* ignore */ }
+      if (!want && cfg.initialMd) want = cfg.initialMd;
+
+      var paths = [];
+      collectPaths(tree, "", paths);
+      if (want) {
+        // accept with or without leading ./
+        want = want.replace(/^\.\//, "");
+        if (paths.indexOf(want) >= 0) {
+          return loadFile(want);
+        }
+        showError("Initial file not found: " + want);
+      }
+      if (paths.length === 1) return loadFile(paths[0]);
+      if (paths.length === 0) {
+        placeholder.textContent = "No Markdown files found under this folder.";
+      }
+    }).catch(function (e) {
+      showError("Failed to start viewer: " + (e && e.message ? e.message : e));
+    });
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

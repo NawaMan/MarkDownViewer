@@ -1,0 +1,5 @@
+/viewmd
+/viewmd.exe
+/bin/
+*.exe
+.DS_Store
