@@ -3,7 +3,7 @@
 Browse a folder of Markdown files in your browser — single Go binary, embedded UI, no Node install.
 
 ![status](https://img.shields.io/badge/status-early-blue)
-[![CI](https://github.com/nawaman/markdownviewer/actions/workflows/ci.yml/badge.svg)](https://github.com/nawaman/markdownviewer/actions/workflows/ci.yml)
+[![CI](https://github.com/NawaMan/MarkDownViewer/actions/workflows/ci.yml/badge.svg)](https://github.com/NawaMan/MarkDownViewer/actions/workflows/ci.yml)
 
 ## Features
 
