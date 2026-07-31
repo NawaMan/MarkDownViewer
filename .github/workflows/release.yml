@@ -106,7 +106,7 @@ jobs:
           # ranks them above the final release, and they should never hold the
           # Latest badge regardless.
           highest="$(printf '%s\n%s\n' "$published" "$TAG" \
-            | grep -v '^[[:space:]]*$' | grep -v -- '-' | sort -V | tail -1)"
+            | grep -v '^[[:space:]]*$' | grep -v '[-]' | sort -V | tail -1)"
           case "$TAG" in
             *-*)
               make_latest=false
