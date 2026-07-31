@@ -1,0 +1,1344 @@
+#!/bin/bash
+# Copyright 2025-2026 : Nawa Manusitthipol
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+
+# CodingBooth Wrapper (booth)
+# Downloads, verifies, and runs the platform-specific CodingBooth binary.
+# Install: curl -fsSL https://codingbooth.io/install.sh | bash
+
+set -euo pipefail
+trap 'status=$?; echo "❌ Error on line $LINENO (exit $status)" >&2; exit "$status"' ERR
+
+# --- PIPE INSTALL DETECTION ---
+# Detect if running via pipe (curl ... | bash)
+# When piped, $0 is the shell name, not a script path
+if [[ "$0" == "bash" || "$0" == "-bash" || "$0" == "/bin/bash" || \
+      "$0" == "sh"   || "$0" == "-sh"   || "$0" == "/bin/sh"   || \
+      "$0" == "zsh"  || "$0" == "-zsh"  || "$0" == "/bin/zsh" ]]; then
+    echo "Installing CodingBooth wrapper..."
+    curl -fsSL https://codingbooth.io/install.sh | bash
+    exit 0
+fi
+
+VERSION=0.15.0
+VERBOSE="${VERBOSE:-true}"
+
+# Resolve this wrapper's absolute path (follow symlinks). All project paths are
+# location-based relative to the script, not the current working directory.
+WRAPPER_SELF="$(realpath "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$WRAPPER_SELF")"
+BOOTH_DIR="${SCRIPT_DIR}/.booth"
+TOOLS_DIR="${BOOTH_DIR}/tools"
+LOCK_FILE="${TOOLS_DIR}/codingbooth.lock"
+
+# Markers for the shell-config block written into bash/zsh/fish rc files.
+# Users can delete everything between these two lines (inclusive) by hand.
+SHELL_CONFIG_BEGIN='# >>> codingbooth shell-config begin >>>'
+SHELL_CONFIG_END='# <<< codingbooth shell-config end <<<'
+
+# --- NESTED BOOTH DETECTION ---
+# Detect if running inside a CodingBooth container and prevent accidental nested execution.
+# Users can explicitly allow nested execution by setting BOOTH_IN_BOOTH=true and using a different port.
+detect_nested_booth() {
+    # Markers for being inside a booth: /opt/codingbooth/ dir or BOOTH_CONTAINER_NAME.
+    [[ ! -d "/opt/codingbooth" && -z "${BOOTH_CONTAINER_NAME:-}" ]] && return 0
+
+    if [[ "${BOOTH_IN_BOOTH:-}" != "true" ]]; then
+        cat >&2 <<EOF
+Error: Running booth inside a booth container.
+  To configure this booth, run: $0 config
+  To launch a nested booth, set BOOTH_IN_BOOTH=true and pass --port <different>.
+EOF
+        exit 1
+    fi
+
+    # Find --port in args.
+    local requested_port=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --port=*) requested_port="${1#--port=}"; break ;;
+            --port)   requested_port="${2:-}"; break ;;
+            *) shift ;;
+        esac
+    done
+
+    local host_port="${BOOTH_HOST_PORT:-}"
+    local code_port="${BOOTH_CODE_PORT:-10000}"
+
+    if [[ -z "$requested_port" ]]; then
+        cat >&2 <<EOF
+Error: nested booth requires an explicit --port.
+  Current container: host=${host_port:-(not set)}, code=${code_port}
+  Use:  --port NEXT  |  --port RANDOM  |  --port <number>
+EOF
+        exit 1
+    fi
+
+    if [[ "$requested_port" != "NEXT" && "$requested_port" != "RANDOM" ]]; then
+        if [[ "$requested_port" == "$host_port" || "$requested_port" == "$code_port" ]]; then
+            local kind="host port"
+            [[ "$requested_port" == "$code_port" ]] && kind="code port"
+            echo "Error: --port $requested_port conflicts with this container's $kind." >&2
+            echo "  Use:  --port NEXT  |  --port RANDOM  |  --port <other-number>" >&2
+            exit 1
+        fi
+    fi
+}
+
+# --- CENTRAL CACHE SETUP ---
+# Platform-specific cache directory for shared binary storage
+get_cache_dir() {
+    case "$(uname -s)" in
+        Linux*)  echo "${XDG_CACHE_HOME:-$HOME/.cache}/codingbooth" ;;
+        Darwin*) echo "$HOME/Library/Caches/codingbooth"            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            if [[ -n "${LOCALAPPDATA:-}" ]]; then
+                echo "$LOCALAPPDATA/codingbooth"
+            else
+                echo "$HOME/AppData/Local/codingbooth"
+            fi
+            ;;
+        *) echo "${XDG_CACHE_HOME:-$HOME/.cache}/codingbooth" ;;
+    esac
+}
+
+BOOTH_CACHE_DIR="${BOOTH_CACHE_DIR:-$(get_cache_dir)}"
+
+# Get version-specific cache directory
+get_cache_version_dir() {
+    local version="$1"
+    echo "${BOOTH_CACHE_DIR}/versions/${version}"
+}
+
+# Find binary directory: local first, then shared cache
+# Returns directory path on stdout, returns 0 if found, 1 if not found
+find_binary_dir() {
+    local version="$1"
+    local platform="$2"
+    local binary_name
+    binary_name=$(get_binary_name "$platform")
+
+    # Check local first (for --cache=local mode)
+    if [[ -f "${TOOLS_DIR}/${binary_name}" ]]; then
+        echo "$TOOLS_DIR"
+        return 0
+    fi
+
+    # Then check shared cache
+    local shared_dir
+    shared_dir="$(get_cache_version_dir "$version")"
+    if [[ -f "${shared_dir}/${binary_name}" ]]; then
+        echo "$shared_dir"
+        return 0
+    fi
+
+    # Not found
+    return 1
+}
+
+# Decide what the "command" is:
+if [[ $# -eq 0 ]]; then COMMAND="run" ; else COMMAND="$1" ; fi
+
+function Main() {
+    ### --- COMMAND DISPATCH --- ###
+    case "${COMMAND}" in
+        uninstall)
+            shift  # Remove 'uninstall'
+            UninstallBooth "$@"
+            exit 0
+            ;;
+        install|update)
+            local cmd="$COMMAND"
+            shift
+            local cache_mode="shared"
+            local version_arg=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --cache=*) cache_mode="${1#--cache=}"; shift ;;
+                    --cache)   cache_mode="$2"; shift 2 ;;
+                    -*) echo "Unknown option: $1" >&2; exit 1 ;;
+                    *)  version_arg="$1"; shift ;;
+                esac
+            done
+            if [[ "$cache_mode" != "local" && "$cache_mode" != "shared" ]]; then
+                echo "Error: Invalid cache mode '$cache_mode'. Use 'local' or 'shared'." >&2
+                exit 1
+            fi
+            # install/update always target $PWD (copy ./booth there if needed, then re-exec).
+            local -a install_forward=(--cache="$cache_mode")
+            [[ -n "$version_arg" ]] && install_forward+=("$version_arg")
+            ensure_project_wrapper_for_install "$cmd" "${install_forward[@]}"
+            if [[ "$cmd" == "install" && -z "$version_arg" && -f "$LOCK_FILE" ]]; then
+                local lock_version
+                lock_version=$(grep '^version=' "$LOCK_FILE" 2>/dev/null | cut -d= -f2-)
+                echo "CodingBooth is already installed (version: ${lock_version:-unknown})."
+                echo "Use '$0 update' to update to the latest version."
+                exit 0
+            fi
+            DownloadBooth "${version_arg:-latest}" "$cache_mode"
+            exit 0
+            ;;
+        run)            [[ "${1-}" == "run" ]] && shift  ;          ;;
+        *)                                                          ;;
+    esac
+
+    ### --- RUN MODE --- ###
+    # `config` is about *this project directory*, not about whichever wrapper was
+    # invoked. e.g. `../OtherRepo/booth config` from an empty folder must still
+    # offer to install into $PWD when this tree (or a parent) has no lock —
+    # even if OtherRepo already has a binary lock next to its wrapper.
+    if [[ "$COMMAND" == "config" ]]; then
+        if ! find_project_install_dir >/dev/null; then
+            if [[ -t 0 ]]; then
+                OfferInstallForConfig "$@"
+                # Accept either re-execs via $PWD/booth or returns after an
+                # in-process install when we already are that wrapper.
+            else
+                # Non-TTY: only hard-error when *this* wrapper also has no
+                # binary (can't run config at all). Otherwise fall through and
+                # run config via the foreign wrapper's binary.
+                if [[ ! -f "$LOCK_FILE" ]]; then
+                    echo "CodingBooth is not installed."
+                    echo "Please run: $0 install"
+                    echo "(Or re-run booth config in a terminal to be prompted to install here.)"
+                    exit 1
+                fi
+            fi
+        fi
+    fi
+
+    # Read version and cache mode from lock file (location-based: next to this wrapper)
+    if [[ ! -f "$LOCK_FILE" ]]; then
+        echo "CodingBooth is not installed."
+        echo "Please run: $0 install"
+        exit 1
+    fi
+
+    local lock_version lock_cache
+    lock_version=$(grep '^version=' "$LOCK_FILE" 2>/dev/null | cut -d= -f2-)
+    lock_cache=$(grep '^cache=' "$LOCK_FILE" 2>/dev/null | cut -d= -f2- || echo "shared")
+
+    if [[ -z "$lock_version" ]]; then
+        echo "Invalid lock file: missing version"
+        echo "Please run: $0 install"
+        exit 1
+    fi
+
+    # Detect platform
+    local platform binary_name
+    if ! platform=$(detect_platform); then
+        echo "Error: Failed to detect platform" >&2
+        exit 1
+    fi
+    binary_name=$(get_binary_name "$platform")
+
+    # Find binary directory (local first, then shared cache)
+    local binary_dir sha_file dest
+    if ! binary_dir=$(find_binary_dir "$lock_version" "$platform"); then
+        # Binary not found, auto-download
+        echo "Binary missing, downloading version $lock_version..."
+        DownloadBooth "$lock_version" "$lock_cache"
+        if ! binary_dir=$(find_binary_dir "$lock_version" "$platform"); then
+            echo "Failed to download binary"
+            exit 1
+        fi
+    fi
+
+    sha_file="$binary_dir/codingbooth.sha256"
+    dest="$binary_dir/$binary_name"
+
+    # Verify binary exists
+    if [[ ! -f "$dest" || ! -f "$sha_file" ]]; then
+        echo "CodingBooth binary or checksum missing for platform: $platform"
+        echo "Please run: $0 install"
+        exit 1
+    fi
+
+    # Verify SHA256 for this platform's binary
+    local expected_sha256 actual_sha256
+    expected_sha256=$(grep "  $binary_name\$" "$sha_file" 2>/dev/null | awk '{print $1}')
+    if [[ -z "$expected_sha256" ]]; then
+        echo "No SHA256 entry found for $binary_name"
+        echo "Run: $0 update  to restore the official release."
+        exit 1
+    fi
+
+    actual_sha256=$(hash_sha256 "$dest" | awk '{gsub(/^\\/, ""); print $1}')
+    if [[ "$expected_sha256" != "$actual_sha256" ]]; then
+        echo "Binary ($binary_name) failed SHA256 verification."
+        echo "Run: $0 update  to restore the official release."
+        exit 1
+    fi
+
+    # Create/update symlink named 'booth' so the binary displays correct name
+    local booth_link="$binary_dir/booth"
+    if [[ ! -L "$booth_link" ]] || [[ "$(readlink "$booth_link")" != "$binary_name" ]]; then
+        ln -sf "$binary_name" "$booth_link" 2>/dev/null || true
+    fi
+
+    # Execute via symlink if available, otherwise direct
+    if [[ -L "$booth_link" ]]; then
+        exec "$booth_link" "$@"
+    else
+        exec "$dest" "$@"
+    fi
+}
+
+function PrintHelp() {
+    cat <<EOF
+Usage: ./$(basename "$0") <command> [args...]
+
+Purpose:
+  This script is the *CodingBooth Wrapper*.
+  - It downloads, verifies, and runs the CodingBooth binary.
+  - Binaries are cached in a shared location (default) or per-project.
+
+Wrapper commands:
+  install [VERSION]              Install binary (skips if already installed)
+  install --cache=shared [VER]   Install to shared cache (explicit)
+  install --cache=local [VER]    Install to .booth/tools/ (project-local)
+  update  [VERSION]              Update binary to latest (or specified) version
+  uninstall [SCOPES...] [-y]     Remove this project's booth (interactive by default)
+                                 Scopes: --shared-binary       (also this version's shared cache)
+                                         --all-shared-binary   (also every shared cache version)
+                                         --wrapper             (also delete ./booth wrapper)
+                                         --all                 (everything above)
+  shell-config [install]         Install central wrapper + booth() in bash/zsh/fish
+  shell-config uninstall         Remove shell function block and central wrapper
+  shell-config status            Show shell-config install state
+  create <dir>                   mkdir <dir>, install booth into it (wrapper + binary)
+
+  run [ARGS...]           Run booth with ARGS (after integrity checks)
+  version                 Show version information
+  help                    Show this help message
+
+Cache modes:
+  --cache=shared   Store in user cache, shared across projects (default)
+  --cache=local    Store in .booth/tools/, project-specific
+
+Cache locations (for --cache=shared):
+  Linux:   ~/.cache/codingbooth/
+  macOS:   ~/Library/Caches/codingbooth/
+  Windows: %LOCALAPPDATA%\\codingbooth\\
+
+Notes:
+  - Lock file (.booth/tools/codingbooth.lock) is version-controlled
+  - Binary is auto-downloaded when lock file exists but binary missing
+  - Only the current platform's binary is downloaded
+  - Use --cache=local for CI/CD or portable/air-gapped environments
+  - Set VERBOSE=true for extra logs during install
+  - To update the wrapper itself, re-run:
+      curl -fsSL https://codingbooth.io/install.sh | bash
+  - booth config with no install prompts (TTY only) to install here
+    and continue; non-interactive shells must run install first
+
+Help/Version disambiguation:
+  ./booth help       Show this wrapper help (install, update, cache commands)
+  ./booth --help     Show codingbooth binary help (run flags, variants, etc.)
+  ./booth version    Show wrapper version + binary version info
+  ./booth --version  Show codingbooth binary version only
+EOF
+}
+
+function PrintVersion() {
+    cat <<'EOF'
+  ____          _ _             ____              _   _
+ / ___|___   __| (_)_ __   __ _| __ )  ___   ___ | |_| |__
+| |   / _ \ / _` | | '_ \ / _` |  _ \ / _ \ / _ \| __| '_ \
+| |__| (_) | (_| | | | | | (_| | |_) | (_) | (_) | |_| | | |
+ \____\___/ \__,_|_|_| |_|\__, |____/ \___/ \___/ \__|_| |_|
+                          |___/
+EOF
+    echo "CodingBooth Wrapper: $VERSION"
+
+    # Detect current platform
+    local platform binary_name
+    platform=$(detect_platform 2>/dev/null || echo "unknown")
+    binary_name=$(get_binary_name "$platform")
+
+    # Check if lock file exists
+    if [[ ! -f "$LOCK_FILE" ]]; then
+        echo "CodingBooth: not installed"
+        echo "Platform: $platform"
+        echo "Shared cache: $BOOTH_CACHE_DIR"
+        exit 0
+    fi
+
+    # Read lock file
+    local lock_version lock_cache
+    lock_version=$(grep '^version=' "$LOCK_FILE" 2>/dev/null | cut -d= -f2- || echo "unknown")
+    lock_cache=$(grep '^cache=' "$LOCK_FILE" 2>/dev/null | cut -d= -f2- || echo "shared")
+
+    # Find binary
+    local binary_dir TOOL
+    if binary_dir=$(find_binary_dir "$lock_version" "$platform" 2>/dev/null); then
+        TOOL="$binary_dir/$binary_name"
+    else
+        echo "CodingBooth: $lock_version (binary missing)"
+        echo "Platform: $platform"
+        echo "Cache mode: $lock_cache"
+        exit 0
+    fi
+
+    local TOOL_VERSION
+    TOOL_VERSION=$("$TOOL" version 2>/dev/null || echo "unknown")
+
+    echo ""
+    echo "$TOOL_VERSION"
+    echo "Platform: $platform"
+    echo "Cache mode: $lock_cache"
+    if [[ "$lock_cache" == "shared" ]]; then
+        echo "Binary location: $binary_dir"
+    fi
+}
+
+# Portable SHA256 helper
+function hash_sha256() {
+    if   command -v sha256sum >/dev/null 2>&1; then sha256sum        "$@"
+    elif command -v shasum    >/dev/null 2>&1; then shasum    -a 256 "$@"
+    else echo "Error: No SHA256 tool found (sha256sum or shasum)." >&2 ; return 1
+    fi
+}
+
+# Detect platform (OS-ARCH format)
+function detect_platform() {
+    local os arch
+    
+    # Detect OS
+    case "$(uname -s)" in
+        Linux*)     os="linux" ;;
+        Darwin*)    os="darwin" ;;
+        MINGW*|MSYS*|CYGWIN*) os="windows" ;;
+        *)          echo "Error: Unsupported OS: $(uname -s)" >&2; return 1 ;;
+    esac
+    
+    # Detect architecture
+    case "$(uname -m)" in
+        x86_64|amd64)   arch="amd64" ;;
+        aarch64|arm64)  arch="arm64" ;;
+        *)              echo "Error: Unsupported architecture: $(uname -m)" >&2; return 1 ;;
+    esac
+    
+    echo "${os}-${arch}"
+}
+
+# Get binary name for platform (adds .exe for Windows)
+function get_binary_name() {
+    local platform="$1"
+    if [[ "$platform" == windows-* ]]; then
+        echo "codingbooth-${platform}.exe"
+    else
+        echo "codingbooth-${platform}"
+    fi
+}
+
+function UninstallBooth() {
+    local remove_shared_binary=false
+    local remove_all_shared_binary=false
+    local remove_wrapper=false
+    local assume_yes=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --shared-binary)     remove_shared_binary=true; shift ;;
+            --all-shared-binary) remove_all_shared_binary=true; shift ;;
+            --wrapper)           remove_wrapper=true; shift ;;
+            --all)               remove_all_shared_binary=true; remove_wrapper=true; shift ;;
+            -y|--yes)            assume_yes=true; shift ;;
+            *) echo "Unknown option: $1" >&2
+               echo "Usage: $0 uninstall [--shared-binary] [--all-shared-binary] [--wrapper] [--all] [-y]" >&2
+               exit 1 ;;
+        esac
+    done
+
+    local tools_dir="$TOOLS_DIR"
+    local sha_file="$tools_dir/codingbooth.sha256"
+    local lock_file="$LOCK_FILE"
+
+    # Read lock version BEFORE removing it (needed for --shared-binary scope).
+    local lock_version=""
+    if [[ -f "$lock_file" ]]; then
+        lock_version=$(grep '^version=' "$lock_file" 2>/dev/null | cut -d= -f2-)
+    fi
+
+    # Build summary of what will be removed (shown in the confirmation prompt).
+    local -a summary=()
+    summary+=("- Project binary association ($tools_dir lock/sha + project-local binaries)")
+    if [[ "$remove_all_shared_binary" == "true" ]]; then
+        summary+=("- ALL shared-cache binaries ($BOOTH_CACHE_DIR/versions/)")
+    elif [[ "$remove_shared_binary" == "true" ]]; then
+        if [[ -n "$lock_version" ]]; then
+            summary+=("- Shared-cache binary for v$lock_version ($BOOTH_CACHE_DIR/versions/$lock_version/)")
+        else
+            summary+=("- Shared-cache binary (no lock file — nothing to remove)")
+        fi
+    fi
+    if [[ "$remove_wrapper" == "true" ]]; then
+        summary+=("- Wrapper script ($SCRIPT_DIR/booth)")
+    fi
+
+    # Confirmation prompt (single prompt, lists everything).
+    if [[ "$assume_yes" != "true" ]]; then
+        if [[ ! -t 0 ]]; then
+            echo "Error: not connected to a terminal — re-run with -y to skip prompts." >&2
+            exit 1
+        fi
+        echo "Uninstall will remove:"
+        for line in "${summary[@]}"; do echo "  $line"; done
+        echo ""
+        printf "Proceed? [y/N] "
+        local reply
+        read -r reply
+        case "$reply" in
+            y|Y|yes|YES|Yes) ;;
+            *) echo "Cancelled." ; exit 0 ;;
+        esac
+        echo ""
+    fi
+
+    # 1. Project binary association (always).
+    rm -f "$tools_dir"/codingbooth-* "$tools_dir/booth" "$sha_file" "$lock_file"
+    rmdir "$tools_dir" 2>/dev/null || true
+    rmdir "$BOOTH_DIR" 2>/dev/null || true
+    echo "✓ Removed project binary association."
+
+    # 2. Shared-cache binary.
+    if [[ "$remove_all_shared_binary" == "true" ]]; then
+        rm -rf "$BOOTH_CACHE_DIR/versions"
+        echo "✓ Removed all cached versions ($BOOTH_CACHE_DIR/versions)."
+    elif [[ "$remove_shared_binary" == "true" ]]; then
+        if [[ -n "$lock_version" ]]; then
+            rm -rf "$BOOTH_CACHE_DIR/versions/$lock_version"
+            echo "✓ Removed cached version $lock_version."
+        else
+            echo "(no lock file — nothing to remove from shared cache)"
+        fi
+    fi
+
+    # 3. Wrapper script (self-delete — safe because the script is already mmap'd).
+    if [[ "$remove_wrapper" == "true" ]]; then
+        local wrapper_path="$SCRIPT_DIR/booth"
+        if [[ -f "$wrapper_path" ]]; then
+            rm -f "$wrapper_path"
+            echo "✓ Removed wrapper: $wrapper_path"
+        fi
+    fi
+
+    echo ""
+    echo "CodingBooth has been uninstalled from this project."
+
+    if [[ "$remove_shared_binary" != "true" && "$remove_all_shared_binary" != "true" ]]; then
+        echo "To clean shared cache, run: $0 tools-cache clean"
+    fi
+}
+
+
+function DownloadBooth() {
+    local CB_VERSION=${1:-latest}
+    local CACHE_MODE=${2:-shared}
+
+    local tools_dir="$TOOLS_DIR"
+    local lock_file="$LOCK_FILE"
+
+    REPO_URL="https://github.com/NawaMan/CodingBooth"
+    DWLD_URL="${REPO_URL}/releases/download"
+
+    # Download version.txt to get the actual version first
+    local actual_version=""
+    local VERSION_URL="${DWLD_URL}/${CB_VERSION}/version.txt"
+    if actual_version=$(curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused "$VERSION_URL" 2>/dev/null | tr -d ' \t\r\n'); then
+        [[ "$VERBOSE" == "true" ]] && echo "  Version: $actual_version"
+    else
+        actual_version="$CB_VERSION"
+    fi
+
+    # Determine target directory based on cache mode
+    local target_dir sha_file
+    if [[ "$CACHE_MODE" == "local" ]]; then
+        target_dir="$tools_dir"
+        sha_file="$tools_dir/codingbooth.sha256"
+    else
+        target_dir="$(get_cache_version_dir "$actual_version")"
+        sha_file="$target_dir/codingbooth.sha256"
+    fi
+
+    mkdir -p "$target_dir"
+    mkdir -p "$tools_dir"  # Always need tools dir for lock file
+
+    # For specific versions (not 'latest'), check if already cached and valid
+    if [[ "$CB_VERSION" != "latest" ]]; then
+        local current_platform_check
+        if current_platform_check=$(detect_platform 2>/dev/null); then
+            local check_binary_name check_dest
+            check_binary_name=$(get_binary_name "$current_platform_check")
+            check_dest="$target_dir/$check_binary_name"
+            if [[ -f "$check_dest" && -f "$sha_file" ]]; then
+                local check_expected check_actual
+                check_expected=$(grep "  ${check_binary_name}\$" "$sha_file" 2>/dev/null | awk '{print $1}')
+                check_actual=$(hash_sha256 "$check_dest" | awk '{gsub(/^\\/, ""); print $1}')
+                if [[ -n "$check_expected" && "$check_expected" == "$check_actual" ]]; then
+                    # Check if this is a version switch
+                    local prev_version=""
+                    if [[ -f "$lock_file" ]]; then
+                        prev_version=$(grep '^version=' "$lock_file" 2>/dev/null | cut -d= -f2-)
+                    fi
+                    if [[ -n "$prev_version" && "$prev_version" != "$actual_version" ]]; then
+                        echo "Switched from $prev_version to $actual_version."
+                    fi
+                    echo "CodingBooth $actual_version is already up-to-date."
+                    # Update lock file to point to this version
+                    {
+                        echo "version=${actual_version}"
+                        echo "downloaded_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+                        echo "cache=${CACHE_MODE}"
+                    } > "$lock_file"
+                    return 0
+                fi
+            fi
+        fi
+    fi
+
+    # Write .booth/.gitignore. This runs before the CLI binary exists, which is why the
+    # wrapper carries a copy at all.
+    #
+    # MUST stay byte-identical to BoothGitignore in cli/src/pkg/boothinit/output/gitignore.go
+    # -- TestBoothGitignoreMatchesWrapper reads this heredoc and diffs it against that
+    # constant. `booth config` rewrites this file unconditionally, so a rule that only one
+    # writer knows about gets silently dropped as soon as the other one runs.
+    #
+    # Not conditioned on CACHE_MODE: the tools/ rules used to be emitted only for
+    # --cache=local, so the first `booth config` in such a project un-ignored the downloaded
+    # binaries. In shared-cache mode tools/ holds only the lock file, so they are a no-op.
+    cat > "${BOOTH_DIR}/.gitignore" <<'GITIGNORE'
+# Secrets - never commit
+.booth.password
+.env
+
+# Local persistent state (not committed).
+# Holds whatever the container writes to the mounted paths, including live credentials
+# (~/.claude/.credentials.json arrives here via the cb-home override layer).
+# Booth refuses to start if this is tracked by git.
+cache/
+
+# Runtime temp files
+.tmp/
+
+# Transient artifacts of booth config overwriting hand-written files:
+# .bak = what was replaced, .new = generated content awaiting a manual merge
+*.bak
+*.new
+
+# Downloaded binaries - re-fetched from the lock version.
+# Shared cache (the default) keeps them in ~/.cache/codingbooth/; --cache=local puts them here.
+tools/codingbooth-*
+tools/*.sha256
+
+# codingbooth.lock and .generated are version-controlled
+GITIGNORE
+
+    local current_platform
+    if ! current_platform=$(detect_platform); then
+        echo "Error: Failed to detect platform" >&2
+        return 1
+    fi
+
+    if [[ "$CACHE_MODE" == "local" ]]; then
+        echo "Downloading CodingBooth binary to project (--cache=local)..."
+    else
+        echo "Downloading CodingBooth binary to shared cache..."
+        echo "  Cache: $target_dir"
+    fi
+
+    local binary_name dest TOOL_URL SHA256_URL
+    binary_name=$(get_binary_name "$current_platform")
+    dest="$target_dir/$binary_name"
+    TOOL_URL="${DWLD_URL}/${CB_VERSION}/${binary_name}"
+    SHA256_URL="${DWLD_URL}/${CB_VERSION}/${binary_name}.sha256"
+
+    if [[ "$VERBOSE" == "true" ]]; then
+        echo "  Checking: $binary_name"
+    else
+        echo -n "  $current_platform ... "
+    fi
+
+    local tmpsha256 expected_sha256
+    tmpsha256=$(mktemp "/tmp/booth.sha256.XXXXXX")
+    if ! curl -fsSLo "$tmpsha256" --retry 3 --retry-delay 2 --retry-connrefused "$SHA256_URL"; then
+        echo "FAILED (sha256 fetch)"
+        rm -f "$tmpsha256"
+        echo "Error: Failed to download binary for $current_platform" >&2
+        return 1
+    fi
+    expected_sha256=$(awk '{print $1}' "$tmpsha256")
+    rm -f "$tmpsha256"
+    if ! [[ "$expected_sha256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        echo "FAILED (malformed sha256)"
+        return 1
+    fi
+
+    # If existing binary already matches expected SHA, no download needed.
+    local need_download=true
+    if [[ -f "$dest" ]]; then
+        local existing_sha256
+        existing_sha256=$(hash_sha256 "$dest" | awk '{print $1}')
+        if [[ "$expected_sha256" == "$existing_sha256" ]]; then
+            need_download=false
+            if [[ "$VERBOSE" != "true" ]]; then
+                echo "✓ up-to-date"
+            else
+                echo "  Already up-to-date: $binary_name"
+            fi
+        fi
+    fi
+
+    if $need_download; then
+        if [[ "$VERBOSE" == "true" ]]; then
+            echo "  Downloading: $binary_name"
+        fi
+
+        local tmpfile actual_sha256
+        tmpfile=$(mktemp "/tmp/booth.XXXXXX")
+        if ! curl -fsSLo "$tmpfile" --retry 3 --retry-delay 2 --retry-connrefused "$TOOL_URL"; then
+            echo "FAILED (download)"
+            rm -f "$tmpfile"
+            return 1
+        fi
+        actual_sha256=$(hash_sha256 "$tmpfile" | awk '{print $1}')
+        if [[ "$expected_sha256" != "$actual_sha256" ]]; then
+            echo "FAILED (sha256 mismatch)"
+            rm -f "$tmpfile"
+            return 1
+        fi
+        mv -f "$tmpfile" "$dest"
+        chmod 744 "$dest"
+        if [[ "$VERBOSE" != "true" ]]; then
+            echo "OK"
+        fi
+    fi
+
+    # Write SHA file (single entry, single platform).
+    printf '%s  %s\n' "$expected_sha256" "$binary_name" > "$sha_file"
+
+    # Write lock file (always in .booth/tools/)
+    {
+        echo "version=${actual_version}"
+        echo "downloaded_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        echo "cache=${CACHE_MODE}"
+    } > "$lock_file"
+
+    echo "CodingBooth installed: downloaded, verified, and installed."
+    if [[ "$VERBOSE" == "true" ]]; then
+        echo "Lock file: $lock_file"
+    fi
+}
+
+# --- SHELL-CONFIG (central wrapper + bash/zsh/fish function) ---
+# OS-sensible data dir for the central copy of this wrapper script.
+get_data_dir() {
+    case "$(uname -s)" in
+        Linux*)  echo "${XDG_DATA_HOME:-$HOME/.local/share}/codingbooth" ;;
+        Darwin*) echo "$HOME/Library/Application Support/codingbooth" ;;
+        MINGW*|MSYS*|CYGWIN*)
+            if [[ -n "${LOCALAPPDATA:-}" ]]; then
+                echo "$LOCALAPPDATA/codingbooth"
+            else
+                echo "$HOME/AppData/Local/codingbooth"
+            fi
+            ;;
+        *) echo "${XDG_DATA_HOME:-$HOME/.local/share}/codingbooth" ;;
+    esac
+}
+
+get_central_booth_path() {
+    echo "$(get_data_dir)/booth"
+}
+
+# Walk $PWD and parents for a real project install: executable ./booth *and*
+# .booth/tools/codingbooth.lock. Used by `config` so a foreign wrapper with
+# its own lock does not skip the "install here?" offer for an empty folder.
+#
+# Lock alone is not enough — e.g. a stale ~/.booth/tools/codingbooth.lock from
+# an old install would otherwise suppress the offer for every directory under
+# $HOME. Matches shell-config's idea of a project booth (wrapper + lock).
+# Prints the project root on success; returns 1 if none.
+find_project_install_dir() {
+    local dir
+    dir="$(pwd -P)"
+    while true; do
+        if [[ -f "${dir}/booth" && -x "${dir}/booth" \
+              && -f "${dir}/.booth/tools/codingbooth.lock" ]]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        case "$dir" in
+            /) return 1 ;;
+        esac
+        dir="$(dirname "$dir")"
+    done
+}
+
+# When `booth config` is run without a project install in $PWD (or a parent),
+# offer to install into $PWD (shared cache, same as bare `install`) and then
+# continue with config. Only config gets this prompt. Caller only invokes this
+# on a TTY; non-TTY is handled in Main.
+#
+# On accept:
+#   - If this process is already $PWD/booth: DownloadBooth in-process, return
+#     so Main can continue (lock now exists beside this wrapper).
+#   - Otherwise (central / other-repo / parent wrapper): ensure $PWD/booth,
+#     run install there, exec `$PWD/booth config …`.
+# On decline: exit 1 (do not open config without an explicit install choice).
+OfferInstallForConfig() {
+    cat <<EOF
+CodingBooth is not installed in this project.
+Install here (shared cache) and continue with config?
+EOF
+    printf "Install and continue? [Y/n] "
+    local reply
+    read -r reply || true
+    case "${reply}" in
+        ""|y|Y|yes|YES|Yes) ;;
+        *)
+            echo "Cancelled."
+            exit 1
+            ;;
+    esac
+    echo ""
+
+    local project_dir project_booth self_real project_real=""
+    project_dir="$(pwd -P)"
+    project_booth="${project_dir}/booth"
+    self_real="$(realpath "$WRAPPER_SELF")"
+
+    if [[ -e "$project_booth" ]]; then
+        if [[ ! -f "$project_booth" ]]; then
+            echo "Error: $project_booth exists and is not a regular file." >&2
+            exit 1
+        fi
+        if [[ ! -x "$project_booth" ]]; then
+            echo "Error: $project_booth exists and is not executable." >&2
+            echo "Remove or rename it, then re-run: booth config" >&2
+            exit 1
+        fi
+        project_real="$(realpath "$project_booth")"
+    else
+        cp -f "$WRAPPER_SELF" "$project_booth"
+        chmod 755 "$project_booth"
+        echo "✓ Project wrapper: $project_booth"
+        project_real="$(realpath "$project_booth")"
+    fi
+
+    if [[ "$self_real" == "$project_real" ]]; then
+        # Already the project wrapper — install in-process, then Main continues.
+        DownloadBooth "latest" "shared" || exit $?
+        return 0
+    fi
+
+    # Foreign wrapper (central, other repo, parent): install into $PWD, re-run.
+    "$project_booth" install || exit $?
+    exec "$project_booth" "$@"
+}
+
+# install/update always target the current directory: ensure $PWD/booth exists
+# (copy this script there if we are not already that file) and re-exec so
+# location-based .booth/tools lands next to it.
+#
+# Why not only central? Shell-config walk-up can run a *parent* ./booth install
+# (e.g. /work/booth while cwd is /work/proj) and would otherwise install into
+# the parent. Install means "this folder".
+#
+# Usage: ensure_project_wrapper_for_install <install|update> [args...]
+# Returns if already running as $PWD/booth; otherwise re-execs.
+ensure_project_wrapper_for_install() {
+    local cmd="$1"
+    shift
+
+    local project_dir project_booth self_real project_real=""
+    project_dir="$(pwd -P)"
+    project_booth="${project_dir}/booth"
+    self_real="$(realpath "$WRAPPER_SELF")"
+
+    if [[ -e "$project_booth" ]]; then
+        if [[ ! -f "$project_booth" ]]; then
+            echo "Error: $project_booth exists and is not a regular file." >&2
+            exit 1
+        fi
+        if [[ ! -x "$project_booth" ]]; then
+            echo "Error: $project_booth exists and is not executable." >&2
+            echo "Remove or rename it, then re-run: booth $cmd" >&2
+            exit 1
+        fi
+        project_real="$(realpath "$project_booth")"
+        if [[ "$self_real" == "$project_real" ]]; then
+            return 0
+        fi
+    fi
+
+    cp -f "$WRAPPER_SELF" "$project_booth"
+    chmod 755 "$project_booth"
+    echo "✓ Project wrapper: $project_booth"
+
+    exec "$project_booth" "$cmd" "$@"
+}
+
+# Rc / conf files that receive the marked shell-config block.
+# Fish uses functions/booth.fish (autoload); conf.d path is also listed so an
+# older conf.d install is cleaned up by uninstall.
+shell_config_targets() {
+    echo "$HOME/.bashrc"
+    echo "$HOME/.zshrc"
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/fish/functions/booth.fish"
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/codingbooth.fish"
+}
+
+fish_booth_function_path() {
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/fish/functions/booth.fish"
+}
+
+# Escape a path for single-quoted shell embedding (bash/zsh/fish).
+shell_single_quote() {
+    local s="$1"
+    # 'foo'bar' -> 'foo'\''bar'
+    printf "%s" "${s//\'/\'\\\'\'}"
+}
+
+# Write the bash/zsh function body (with markers) to stdout.
+# $1 = absolute path to the central booth wrapper.
+emit_bash_zsh_shell_config_block() {
+    local central="$1"
+    local qcentral
+    qcentral="$(shell_single_quote "$central")"
+    cat <<EOF
+${SHELL_CONFIG_BEGIN}
+# CodingBooth: type \`booth\` from any directory.
+# - --code <dir>: use <dir>/booth if present (lock lives with that wrapper)
+# - install/update: always this directory (\$PWD), never a parent booth
+# - else walk up for ./booth; from a subdir append --code <project>
+# - else central wrapper
+booth() {
+  local _cb_dir _cb_central _cb_arg _cb_has_code _cb_code="" _cb_take=false _cb_code_abs
+  _cb_central='${qcentral}'
+
+  for _cb_arg in "\$@"; do
+    if \$_cb_take; then
+      _cb_code="\$_cb_arg"
+      _cb_take=false
+      continue
+    fi
+    case "\$_cb_arg" in
+      --code=*) _cb_code="\${_cb_arg#--code=}" ;;
+      --code)   _cb_take=true ;;
+    esac
+  done
+  if [[ -n "\$_cb_code" ]]; then
+    if _cb_code_abs="\$(cd "\$_cb_code" 2>/dev/null && pwd -P)"; then
+      if [[ -x "\$_cb_code_abs/booth" && -f "\$_cb_code_abs/booth" ]]; then
+        "\$_cb_code_abs/booth" "\$@"
+        return \$?
+      fi
+    fi
+  fi
+
+  case "\${1:-}" in
+    install|update|create)
+      if [[ -x "\$PWD/booth" && -f "\$PWD/booth" ]]; then
+        "\$PWD/booth" "\$@"
+      elif [[ -x "\$_cb_central" ]]; then
+        "\$_cb_central" "\$@"
+      else
+        echo "CodingBooth: no ./booth here and central wrapper missing: \$_cb_central" >&2
+        return 1
+      fi
+      return \$?
+      ;;
+  esac
+
+  _cb_dir="\$PWD"
+  while true; do
+    if [[ -x "\$_cb_dir/booth" && -f "\$_cb_dir/booth" ]]; then
+      _cb_dir="\$(cd "\$_cb_dir" && pwd -P)"
+      case "\${1:-}" in
+        uninstall|version|help|shell-config)
+          "\$_cb_dir/booth" "\$@"
+          return \$?
+          ;;
+      esac
+      _cb_has_code=false
+      for _cb_arg in "\$@"; do
+        case "\$_cb_arg" in
+          --code|--code=*) _cb_has_code=true; break ;;
+        esac
+      done
+      if ! \$_cb_has_code && [[ "\$(pwd -P)" != "\$_cb_dir" ]]; then
+        "\$_cb_dir/booth" "\$@" --code "\$_cb_dir"
+      else
+        "\$_cb_dir/booth" "\$@"
+      fi
+      return \$?
+    fi
+    case "\$_cb_dir" in
+      /) break ;;
+    esac
+    _cb_dir="\$(dirname "\$_cb_dir")"
+  done
+  if [[ ! -x "\$_cb_central" ]]; then
+    echo "CodingBooth: no project booth above \$PWD and central wrapper missing:" >&2
+    echo "  \$_cb_central" >&2
+    echo "Re-run: ./booth shell-config install   (or codingbooth.io/install.sh)" >&2
+    return 1
+  fi
+  "\$_cb_central" "\$@"
+}
+${SHELL_CONFIG_END}
+EOF
+}
+
+# Write the fish function body (with markers) to stdout.
+# Installed as ~/.config/fish/functions/booth.fish so fish autoloads it.
+emit_fish_shell_config_block() {
+    local central="$1"
+    local qcentral
+    qcentral="$(shell_single_quote "$central")"
+    cat <<EOF
+${SHELL_CONFIG_BEGIN}
+# CodingBooth: type \`booth\` from any directory.
+# - --code <dir>: use <dir>/booth if present (lock lives with that wrapper)
+# - install/update: always this directory, never a parent booth
+# - else walk up for ./booth; from a subdir append --code <project>
+# - else central wrapper
+function booth
+    # NOTE: fish command substitutions are NOT subshells — never use \`cd\` inside
+    # (...); it would change the caller's working directory. Use realpath instead.
+    set -l _cb_central '${qcentral}'
+    set -l _cb_code ''
+    set -l _cb_take 0
+    for _cb_arg in \$argv
+        if test \$_cb_take -eq 1
+            set _cb_code \$_cb_arg
+            set _cb_take 0
+            continue
+        end
+        switch \$_cb_arg
+            case '--code=*'
+                set _cb_code (string replace -- '--code=' '' \$_cb_arg)
+            case '--code'
+                set _cb_take 1
+        end
+    end
+    if test -n "\$_cb_code"
+        set -l _cb_code_abs (realpath "\$_cb_code" 2>/dev/null)
+        if test -n "\$_cb_code_abs"; and test -x "\$_cb_code_abs/booth"; and test -f "\$_cb_code_abs/booth"
+            "\$_cb_code_abs/booth" \$argv
+            return \$status
+        end
+    end
+    if set -q argv[1]
+        switch \$argv[1]
+            case install update create
+                if test -x "./booth"; and test -f "./booth"
+                    ./booth \$argv
+                else if test -x "\$_cb_central"
+                    "\$_cb_central" \$argv
+                else
+                    echo "CodingBooth: no ./booth here and central wrapper missing: \$_cb_central" >&2
+                    return 1
+                end
+                return \$status
+        end
+    end
+    set -l _cb_dir (pwd -P)
+    while true
+        if test -x "\$_cb_dir/booth"; and test -f "\$_cb_dir/booth"
+            set -l _cb_resolved (realpath "\$_cb_dir" 2>/dev/null)
+            if test -n "\$_cb_resolved"
+                set _cb_dir \$_cb_resolved
+            end
+            if set -q argv[1]
+                switch \$argv[1]
+                    case uninstall version help shell-config
+                        "\$_cb_dir/booth" \$argv
+                        return \$status
+                end
+            end
+            set -l _cb_has_code 0
+            for _cb_arg in \$argv
+                switch \$_cb_arg
+                    case '--code' '--code=*'
+                        set _cb_has_code 1
+                        break
+                end
+            end
+            set -l _cb_cwd (pwd -P)
+            if test \$_cb_has_code -eq 0; and test "\$_cb_cwd" != "\$_cb_dir"
+                "\$_cb_dir/booth" \$argv --code \$_cb_dir
+            else
+                "\$_cb_dir/booth" \$argv
+            end
+            return \$status
+        end
+        if test "\$_cb_dir" = /
+            break
+        end
+        set _cb_dir (dirname \$_cb_dir)
+    end
+    if not test -x "\$_cb_central"
+        echo "CodingBooth: no project booth above \$PWD and central wrapper missing:" >&2
+        echo "  \$_cb_central" >&2
+        echo "Re-run: ./booth shell-config install   (or codingbooth.io/install.sh)" >&2
+        return 1
+    end
+    "\$_cb_central" \$argv
+end
+${SHELL_CONFIG_END}
+EOF
+}
+
+# Remove a marked block from a file (idempotent: no-op if missing).
+remove_marked_block() {
+    local target="$1"
+    [[ -f "$target" ]] || return 0
+    if ! grep -qxF "$SHELL_CONFIG_BEGIN" "$target" 2>/dev/null; then
+        return 0
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    awk -v b="$SHELL_CONFIG_BEGIN" -v e="$SHELL_CONFIG_END" '
+        $0 == b { skip=1; next }
+        $0 == e { skip=0; next }
+        !skip { print }
+    ' "$target" > "$tmp"
+    mv "$tmp" "$target"
+}
+
+# Install or replace a marked block in a target file (idempotent).
+# $1 = target path, $2 = path to file containing the full block (with markers).
+install_marked_block() {
+    local target="$1"
+    local block_file="$2"
+    local dir
+    dir="$(dirname "$target")"
+    mkdir -p "$dir"
+
+    local tmp
+    tmp="$(mktemp)"
+
+    if [[ -f "$target" ]] && grep -qxF "$SHELL_CONFIG_BEGIN" "$target" 2>/dev/null; then
+        # Replace existing block in place.
+        awk -v b="$SHELL_CONFIG_BEGIN" -v e="$SHELL_CONFIG_END" -v bf="$block_file" '
+            $0 == b {
+                while ((getline line < bf) > 0) print line
+                close(bf)
+                skip=1
+                next
+            }
+            $0 == e { skip=0; next }
+            !skip { print }
+        ' "$target" > "$tmp"
+    else
+        # Append (create file if needed). Preserve prior content.
+        if [[ -f "$target" && -s "$target" ]]; then
+            cat "$target" > "$tmp"
+            # Ensure a separating newline before the block.
+            if [[ -n "$(tail -c 1 "$tmp" 2>/dev/null || true)" ]]; then
+                echo >> "$tmp"
+            fi
+            echo >> "$tmp"
+        else
+            : > "$tmp"
+        fi
+        cat "$block_file" >> "$tmp"
+        echo >> "$tmp"
+    fi
+    mv "$tmp" "$target"
+}
+
+ShellConfigInstall() {
+    local central data_dir
+    data_dir="$(get_data_dir)"
+    central="$(get_central_booth_path)"
+
+    mkdir -p "$data_dir"
+    cp -f "$WRAPPER_SELF" "$central"
+    chmod 755 "$central"
+    echo "✓ Central wrapper: $central"
+
+    local bash_block fish_block
+    bash_block="$(mktemp)"
+    fish_block="$(mktemp)"
+    emit_bash_zsh_shell_config_block "$central" > "$bash_block"
+    emit_fish_shell_config_block "$central" > "$fish_block"
+
+    # bash
+    install_marked_block "$HOME/.bashrc" "$bash_block"
+    echo "✓ bash: $HOME/.bashrc"
+
+    # zsh
+    install_marked_block "$HOME/.zshrc" "$bash_block"
+    echo "✓ zsh:  $HOME/.zshrc"
+
+    # fish (autoload path — more reliable than conf.d alone)
+    local fish_fn
+    fish_fn="$(fish_booth_function_path)"
+    install_marked_block "$fish_fn" "$fish_block"
+    echo "✓ fish: $fish_fn"
+    # Drop legacy conf.d snippet if present (superseded by functions/booth.fish).
+    local fish_legacy
+    fish_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/codingbooth.fish"
+    if [[ -f "$fish_legacy" ]]; then
+        remove_marked_block "$fish_legacy"
+        rmdir "$(dirname "$fish_legacy")" 2>/dev/null || true
+        echo "✓ fish: removed legacy $fish_legacy"
+    fi
+
+    rm -f "$bash_block" "$fish_block"
+
+    echo ""
+    echo "Shell function installed (idempotent). Open a new shell or:"
+    echo "  source ~/.bashrc    # or ~/.zshrc"
+    echo "  # fish autoloads ~/.config/fish/functions/booth.fish"
+    echo ""
+    echo "Type 'booth' from any directory: walks up for a project wrapper,"
+    echo "or uses --code <dir>/booth when you pass --code. install/update always"
+    echo "target \$PWD. help/version work from central alone."
+}
+
+ShellConfigUninstall() {
+    local target
+    while IFS= read -r target; do
+        if [[ -f "$target" ]] && grep -qxF "$SHELL_CONFIG_BEGIN" "$target" 2>/dev/null; then
+            remove_marked_block "$target"
+            echo "✓ Removed block from $target"
+        else
+            echo "  (no block in $target)"
+        fi
+    done < <(shell_config_targets)
+
+    local central data_dir
+    central="$(get_central_booth_path)"
+    data_dir="$(get_data_dir)"
+    if [[ -f "$central" ]]; then
+        rm -f "$central"
+        echo "✓ Removed central wrapper: $central"
+    else
+        echo "  (no central wrapper at $central)"
+    fi
+    # Remove data dir only if empty (do not touch shared binary cache).
+    rmdir "$data_dir" 2>/dev/null || true
+
+    echo ""
+    echo "Shell-config uninstalled. Restart your shell (or unsource) to drop 'booth'."
+}
+
+ShellConfigStatus() {
+    local central
+    central="$(get_central_booth_path)"
+    echo "Central wrapper: $central"
+    if [[ -x "$central" ]]; then
+        echo "  status: present"
+    elif [[ -e "$central" ]]; then
+        echo "  status: exists but not executable"
+    else
+        echo "  status: missing"
+    fi
+    echo ""
+    echo "Shell rc blocks:"
+    local target
+    while IFS= read -r target; do
+        if [[ -f "$target" ]] && grep -qxF "$SHELL_CONFIG_BEGIN" "$target" 2>/dev/null; then
+            echo "  [installed] $target"
+        else
+            echo "  [absent]    $target"
+        fi
+    done < <(shell_config_targets)
+}
+
+ShellConfigCommand() {
+    local sub="${1:-install}"
+    case "$sub" in
+        install)
+            ShellConfigInstall
+            ;;
+        uninstall)
+            ShellConfigUninstall
+            ;;
+        status)
+            ShellConfigStatus
+            ;;
+        help|-h|--help)
+            cat <<EOF
+Usage: ./$(basename "$0") shell-config [install|uninstall|status|help]
+
+  install     Copy this wrapper to the OS data dir and install booth()
+              into ~/.bashrc, ~/.zshrc, and fish functions (default if omitted).
+  uninstall   Remove the marked shell block and the central wrapper.
+  status      Show whether the function and central wrapper are installed.
+
+./booth shell-config   is the same as   ./booth shell-config install
+EOF
+            return 0
+            ;;
+        *)
+            echo "Unknown shell-config command: $sub" >&2
+            echo "Use: shell-config [install] | uninstall | status | help" >&2
+            return 1
+            ;;
+    esac
+}
+
+# Create a directory and install CodingBooth into it (project wrapper + binary).
+# Usage: booth create <dir> [install-args...]
+# Example: booth create myapp
+#          booth create myapp --cache=local 0.63.0
+CreateBooth() {
+    local dir="${1:-}"
+    if [[ -z "$dir" ]]; then
+        echo "Usage: ./$(basename "$0") create <dir> [install options...]" >&2
+        echo "  Creates <dir> (if needed) and runs booth install inside it." >&2
+        return 1
+    fi
+    shift
+
+    if [[ -e "$dir" && ! -d "$dir" ]]; then
+        echo "Error: $dir exists and is not a directory." >&2
+        return 1
+    fi
+
+    mkdir -p "$dir"
+    # Install targets $PWD of the child process → lands in <dir>.
+    # Re-exec via this same wrapper so ensure_project_wrapper copies booth there.
+    (cd "$dir" && exec "$WRAPPER_SELF" install "$@")
+}
+
+# Early handling of version/help/shell-config so they don't require curl
+case "${COMMAND}" in
+    version) PrintVersion ; exit 0 ; ;;
+    help)    PrintHelp    ; exit 0 ; ;;
+    shell-config)
+        shift
+        ShellConfigCommand "$@"
+        exit $?
+        ;;
+esac
+
+# Check for nested booth execution (running booth inside a booth container)
+# Only warn for 'run' command — other commands (list, init, etc.) are safe inside a container
+if [[ "${COMMAND}" == "run" ]]; then
+    detect_nested_booth "$@"
+fi
+
+# Need curl for install/run/update/uninstall/create
+if ! command -v curl >/dev/null 2>&1; then
+    echo "Error: curl is required but was not found." >&2
+    exit 1
+fi
+
+case "${COMMAND}" in
+    create)
+        shift
+        CreateBooth "$@"
+        exit $?
+        ;;
+esac
+
+Main "$@"

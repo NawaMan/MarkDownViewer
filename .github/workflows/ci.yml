@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Vet and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l ./cmd)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed for: $unformatted"
+            gofmt -d ./cmd
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # The daemon has per-OS implementations; make sure they all still compile.
+      - name: Vet every target platform
+        run: |
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            echo "vet ${pair}"
+            GOOS="${pair%/*}" GOARCH="${pair#*/}" go vet ./...
+          done
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go test
+        run: go test ./...
+
+  race:
+    name: Race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Covers the expose watcher and shutdown goroutines. Kept to one Linux
+      # job because -race needs cgo and a C toolchain.
+      - name: go test -race
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
+
+  build:
+    name: Cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build.sh --all
+        run: ./build.sh --all
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewmd-binaries
+          path: bin/viewmd-*
+          retention-days: 7

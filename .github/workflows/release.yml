@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # version.txt is the single source of truth for the version the binary
+      # reports, so a tag that disagrees with it would ship a mislabelled build.
+      - name: Check version.txt matches the tag
+        run: |
+          want="${TAG#v}"
+          got="$(tr -d ' \t\n\r' < version.txt)"
+          if [ "$want" != "$got" ]; then
+            echo "::error::tag ${TAG} implies version ${want}, but version.txt says ${got}"
+            exit 1
+          fi
+          echo "Releasing viewmd ${got}"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build all platforms
+        run: ./build.sh --all
+
+      - name: Checksums
+        working-directory: bin
+        run: |
+          sha256sum viewmd-* > SHA256SUMS
+          cat SHA256SUMS
+
+      # Confirm the shipped binary reports the version it claims to be.
+      - name: Smoke-test the linux binary
+        run: |
+          got="$(./bin/viewmd-linux-amd64 version)"
+          [ "$got" = "${TAG#v}" ] || { echo "::error::binary reports ${got}, expected ${TAG#v}"; exit 1; }
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$TAG" \
+            bin/viewmd-* bin/SHA256SUMS \
+            --title "viewmd ${TAG}" \
+            --generate-notes
