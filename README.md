@@ -121,11 +121,15 @@ must match `version.txt` (`v0.2.0` ↔ `0.2.0`) or the workflow fails before
 publishing anything, and the built binary's `viewmd version` output is checked
 against the tag as well.
 
-The release can also be run manually from the Actions tab. It takes no inputs:
-the tag is derived from `version.txt` (`0.2.0` → `v0.2.0`), and the workflow
+The release can also be run manually from the Actions tab. There is no tag to
+enter: it is derived from `version.txt` (`0.2.0` → `v0.2.0`), and the workflow
 checks out that tag so it builds the tagged commit rather than whatever the
 dispatch ref points at. It fails with a clear message if the tag does not exist
 yet.
+
+Re-running a release is safe: an existing release for the tag is replaced (the
+git tag itself is left alone). Untick **force** on a manual run to fail instead
+of overwriting.
 
 Each run also refreshes a rolling `latest` release holding the same binaries,
 so download URLs never need editing:

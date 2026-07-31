@@ -3,9 +3,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # No inputs: the tag is derived from version.txt, so there is nothing to
-  # mistype. Dispatch from any ref whose version.txt names the release.
+  # The tag is derived from version.txt, so there is nothing to mistype.
+  # Dispatch from any ref whose version.txt names the release.
   workflow_dispatch:
+    inputs:
+      force:
+        description: Replace the release if it already exists
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -77,7 +82,19 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force }}
         run: |
+          # Tag pushes carry no inputs, so re-running one replaces by default.
+          force="${FORCE:-true}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$force" != "true" ]; then
+              echo "::error::release ${TAG} already exists (re-run with \"force\" enabled to replace it)"
+              exit 1
+            fi
+            echo "Release ${TAG} exists — replacing it"
+            # Deletes only the release; the git tag itself stays put.
+            gh release delete "$TAG" --yes
+          fi
           gh release create "$TAG" \
             bin/viewmd-* bin/SHA256SUMS \
             --title "viewmd ${TAG}" \
