@@ -119,8 +119,13 @@ git push origin main v0.2.0
 publishes a GitHub release with the binaries and a `SHA256SUMS` file. The tag
 must match `version.txt` (`v0.2.0` ↔ `0.2.0`) or the workflow fails before
 publishing anything, and the built binary's `viewmd version` output is checked
-against the tag as well. A release can also be re-run manually from the Actions
-tab against an existing tag.
+against the tag as well.
+
+The release can also be run manually from the Actions tab. It takes no inputs:
+the tag is derived from `version.txt` (`0.2.0` → `v0.2.0`), and the workflow
+checks out that tag so it builds the tagged commit rather than whatever the
+dispatch ref points at. It fails with a clear message if the tag does not exist
+yet.
 
 ## Layout
 

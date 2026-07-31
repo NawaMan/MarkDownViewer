@@ -3,11 +3,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # No inputs: the tag is derived from version.txt, so there is nothing to
+  # mistype. Dispatch from any ref whose version.txt names the release.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing tag to build and release (e.g. v0.1.0)
-        required: true
 
 permissions:
   contents: write
@@ -16,12 +14,11 @@ jobs:
   release:
     name: Build and publish
     runs-on: ubuntu-latest
-    env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
+      # fetch-depth: 0 brings the tags along, which the dispatch path needs to
+      # resolve and check out the tag named by version.txt.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
           fetch-depth: 0
 
       - uses: actions/setup-go@v5
@@ -29,8 +26,26 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Resolve the tag
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+            echo "Tag push: ${tag}"
+          else
+            tag="v$(tr -d ' \t\n\r' < version.txt)"
+            echo "Dispatch: version.txt names ${tag}"
+            if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              echo "::error::tag ${tag} does not exist — create and push it first"
+              exit 1
+            fi
+            # Build the tagged commit, not whatever the dispatch ref points at.
+            git checkout -q "refs/tags/${tag}"
+          fi
+          echo "TAG=${tag}" >> "$GITHUB_ENV"
+
       # version.txt is the single source of truth for the version the binary
       # reports, so a tag that disagrees with it would ship a mislabelled build.
+      # Re-checked after the checkout above, which may have moved the worktree.
       - name: Check version.txt matches the tag
         run: |
           want="${TAG#v}"
