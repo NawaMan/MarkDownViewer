@@ -127,6 +127,23 @@ checks out that tag so it builds the tagged commit rather than whatever the
 dispatch ref points at. It fails with a clear message if the tag does not exist
 yet.
 
+Each run also refreshes a rolling `latest` release holding the same binaries,
+so download URLs never need editing:
+
+```bash
+# rolling `latest` tag
+curl -LO https://github.com/NawaMan/MarkDownViewer/releases/download/latest/viewmd-linux-amd64
+
+# equivalent, using GitHub's own newest-release redirect
+curl -LO https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-amd64
+
+chmod +x viewmd-linux-amd64
+```
+
+The versioned release keeps the "Latest" badge; the rolling one is published
+with `--latest=false` so it never displaces it. Note the `latest` git tag moves
+on every release, so `git fetch --tags` may need `--force`.
+
 ## Layout
 
 ```text

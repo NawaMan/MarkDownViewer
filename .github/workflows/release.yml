@@ -82,3 +82,26 @@ jobs:
             bin/viewmd-* bin/SHA256SUMS \
             --title "viewmd ${TAG}" \
             --generate-notes
+
+      # A rolling release under the `latest` tag, so download URLs never need
+      # editing. Recreated each time because its tag has to move; --latest=false
+      # keeps the "Latest" badge (and /releases/latest) on the versioned one.
+      - name: Update the rolling "latest" release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest \
+            bin/viewmd-* bin/SHA256SUMS \
+            --target "$(git rev-parse HEAD)" \
+            --title "Latest (${TAG})" \
+            --latest=false \
+            --notes "Rolling release: always the newest tagged build, currently [\`${TAG}\`](../../releases/tag/${TAG}).
+
+          Download URLs stay valid across versions:
+
+          \`\`\`bash
+          curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/viewmd-linux-amd64
+          \`\`\`
+
+          The \`latest\` git tag moves with every release, so \`git fetch --tags\` may need \`--force\`."
