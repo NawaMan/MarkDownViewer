@@ -131,6 +131,11 @@ If a release for the tag already exists the run stops rather than overwriting
 it. Tick **force** on a manual run to replace it instead; that deletes and
 recreates the release, leaving the git tag itself alone.
 
+A release is marked "Latest" — the target of the `releases/latest` redirect —
+only when its version is the highest published one, so re-releasing an older
+tag cannot displace a newer one. Pre-release tags (`v1.2.3-rc1`) are never
+marked Latest.
+
 ## Install
 
 Grab a binary from the newest release — GitHub redirects `releases/latest` to

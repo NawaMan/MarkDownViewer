@@ -96,12 +96,34 @@ jobs:
             # Deletes only the release; the git tag itself stays put.
             gh release delete "$TAG" --yes
           fi
-          # No rolling "latest" release: GitHub already redirects
-          # /releases/latest/download/<asset> to the newest release, and a
-          # `latest` tag cannot be pushed by GITHUB_TOKEN anyway (moving it
-          # counts as changing this workflow file, which needs a permission
-          # GITHUB_TOKEN cannot be granted).
+          # Claim the "Latest" badge only when this really is the highest
+          # version, so re-releasing an older tag cannot displace a newer one.
+          # That badge is what /releases/latest/download/<asset> resolves to,
+          # which is why there is no separate rolling `latest` release (and a
+          # `latest` tag could not be pushed by GITHUB_TOKEN anyway).
+          published="$(gh release list --json tagName --jq '.[].tagName' 2>/dev/null || true)"
+          # Pre-releases (v1.2.3-rc1) are excluded from the comparison: sort -V
+          # ranks them above the final release, and they should never hold the
+          # Latest badge regardless.
+          highest="$(printf '%s\n%s\n' "$published" "$TAG" \
+            | grep -v '^[[:space:]]*$' | grep -v -- '-' | sort -V | tail -1)"
+          case "$TAG" in
+            *-*)
+              make_latest=false
+              echo "${TAG} is a pre-release — not marking it Latest"
+              ;;
+            "$highest")
+              make_latest=true
+              echo "${TAG} is the highest version — marking it Latest"
+              ;;
+            *)
+              make_latest=false
+              echo "${TAG} is older than ${highest} — not marking it Latest"
+              ;;
+          esac
+
           gh release create "$TAG" \
             bin/viewmd-* bin/SHA256SUMS \
             --title "viewmd ${TAG}" \
+            --latest="$make_latest" \
             --generate-notes
