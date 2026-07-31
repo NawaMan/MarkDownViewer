@@ -96,35 +96,12 @@ jobs:
             # Deletes only the release; the git tag itself stays put.
             gh release delete "$TAG" --yes
           fi
+          # No rolling "latest" release: GitHub already redirects
+          # /releases/latest/download/<asset> to the newest release, and a
+          # `latest` tag cannot be pushed by GITHUB_TOKEN anyway (moving it
+          # counts as changing this workflow file, which needs a permission
+          # GITHUB_TOKEN cannot be granted).
           gh release create "$TAG" \
             bin/viewmd-* bin/SHA256SUMS \
             --title "viewmd ${TAG}" \
             --generate-notes
-
-      # A rolling release under the `latest` tag, so download URLs never need
-      # editing. Recreated each time because its tag has to move; --latest=false
-      # keeps the "Latest" badge (and /releases/latest) on the versioned one.
-      - name: Update the rolling "latest" release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Move the tag with git rather than letting the releases API create
-          # the ref: creating a release against an existing tag is the path
-          # that already works for the versioned release above.
-          git tag -f latest "${TAG}^{commit}"
-          git push -f origin refs/tags/latest
-
-          gh release delete latest --yes 2>/dev/null || true
-          gh release create latest \
-            bin/viewmd-* bin/SHA256SUMS \
-            --title "Latest (${TAG})" \
-            --latest=false \
-            --notes "Rolling release: always the newest tagged build, currently [\`${TAG}\`](../../releases/tag/${TAG}).
-
-          Download URLs stay valid across versions:
-
-          \`\`\`bash
-          curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/viewmd-linux-amd64
-          \`\`\`
-
-          The \`latest\` git tag moves with every release, so \`git fetch --tags\` may need \`--force\`."

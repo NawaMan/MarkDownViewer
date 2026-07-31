@@ -131,22 +131,31 @@ If a release for the tag already exists the run stops rather than overwriting
 it. Tick **force** on a manual run to replace it instead; that deletes and
 recreates the release, leaving the git tag itself alone.
 
-Each run also refreshes a rolling `latest` release holding the same binaries,
-so download URLs never need editing:
+## Install
+
+Grab a binary from the newest release — GitHub redirects `releases/latest` to
+it, so this URL never needs updating:
 
 ```bash
-# rolling `latest` tag
-curl -LO https://github.com/NawaMan/MarkDownViewer/releases/download/latest/viewmd-linux-amd64
-
-# equivalent, using GitHub's own newest-release redirect
 curl -LO https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-amd64
-
 chmod +x viewmd-linux-amd64
+./viewmd-linux-amd64 version
 ```
 
-The versioned release keeps the "Latest" badge; the rolling one is published
-with `--latest=false` so it never displaces it. Note the `latest` git tag moves
-on every release, so `git fetch --tags` may need `--force`.
+Swap `viewmd-linux-amd64` for `viewmd-linux-arm64`, `viewmd-darwin-amd64`,
+`viewmd-darwin-arm64`, or `viewmd-windows-amd64.exe`. Each release also carries
+a `SHA256SUMS` file:
+
+```bash
+curl -LO https://github.com/NawaMan/MarkDownViewer/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+Or with Go:
+
+```bash
+go install github.com/NawaMan/MarkDownViewer/cmd/viewmd@latest
+```
 
 ## Layout
 
