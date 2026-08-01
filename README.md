@@ -138,8 +138,17 @@ marked Latest.
 
 ## Install
 
-Grab a binary from the newest release — GitHub redirects `releases/latest` to
-it, so this URL never needs updating:
+Every link below points at the newest release — GitHub redirects
+`releases/latest/download/…` to it, so these never need updating:
+
+| Platform | Download |
+| --- | --- |
+| Linux x86-64 | [viewmd-linux-amd64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-amd64) |
+| Linux ARM64 | [viewmd-linux-arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-arm64) |
+| macOS Intel | [viewmd-darwin-amd64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-darwin-amd64) |
+| macOS Apple Silicon | [viewmd-darwin-arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-darwin-arm64) |
+| Windows x86-64 | [viewmd-windows-amd64.exe](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-windows-amd64.exe) |
+| Checksums | [SHA256SUMS](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/SHA256SUMS) |
 
 ```bash
 curl -LO https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-amd64
@@ -147,14 +156,16 @@ chmod +x viewmd-linux-amd64
 ./viewmd-linux-amd64 version
 ```
 
-Swap `viewmd-linux-amd64` for `viewmd-linux-arm64`, `viewmd-darwin-amd64`,
-`viewmd-darwin-arm64`, or `viewmd-windows-amd64.exe`. Each release also carries
-a `SHA256SUMS` file:
+Verify against the checksums file:
 
 ```bash
 curl -LO https://github.com/NawaMan/MarkDownViewer/releases/latest/download/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
 ```
+
+Note the path order: `releases/latest/download/<file>`, not
+`releases/download/latest/<file>` — the latter looks for a tag named `latest`,
+which does not exist.
 
 Or with Go:
 
