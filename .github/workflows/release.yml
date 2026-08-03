@@ -67,10 +67,26 @@ jobs:
       - name: Build all platforms
         run: ./build.sh --all
 
+      # The installers ship beside the binaries so the one-liner in the README
+      # can fetch them from releases/latest/download/. Each carries the tag it
+      # was published with, so a script pulled from a pinned release installs
+      # that same release rather than drifting to the newest one.
+      - name: Stage the installers
+        run: |
+          sed "s|^VERSION_DEFAULT=.*|VERSION_DEFAULT=${TAG}|" install.sh > bin/install.sh
+          sed "s|^\$VersionDefault = .*|\$VersionDefault = '${TAG}'|" install.ps1 > bin/install.ps1
+          chmod +x bin/install.sh
+          grep -H "^VERSION_DEFAULT=\|^\$VersionDefault" bin/install.sh bin/install.ps1
+          sh -n bin/install.sh
+          pwsh -NoProfile -Command '
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile("bin/install.ps1", [ref]$null, [ref]$errs) > $null
+            if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }'
+
       - name: Checksums
         working-directory: bin
         run: |
-          sha256sum viewmd-* > SHA256SUMS
+          sha256sum viewmd-* install.sh install.ps1 > SHA256SUMS
           cat SHA256SUMS
 
       # Confirm the shipped binary reports the version it claims to be.
@@ -123,7 +139,18 @@ jobs:
           esac
 
           gh release create "$TAG" \
-            bin/viewmd-* bin/SHA256SUMS \
+            bin/viewmd-* bin/install.sh bin/install.ps1 bin/SHA256SUMS \
             --title "viewmd ${TAG}" \
             --latest="$make_latest" \
             --generate-notes
+
+      # An installer that does not install is worse than no installer, so run
+      # the published one against the release it just shipped with. The tag URL
+      # is used rather than releases/latest, which a pre-release never becomes.
+      - name: Verify the published installer
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install.sh"
+          curl -fsSL "$url" -o /tmp/install.sh
+          VIEWMD_INSTALL_DIR=/tmp/viewmd-install sh /tmp/install.sh
+          got="$(/tmp/viewmd-install/viewmd version)"
+          [ "$got" = "${TAG#v}" ] || { echo "::error::installer produced ${got}, expected ${TAG#v}"; exit 1; }

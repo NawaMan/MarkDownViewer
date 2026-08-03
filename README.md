@@ -10,16 +10,78 @@ Browse a folder of Markdown files in your browser — single Go binary, embedded
 - Serve any directory of `*.md` / `*.markdown` files over HTTP
 - Sidebar file tree + GitHub-flavoured rendering ([Marked](https://github.com/markedjs/marked))
 - Resizable sidebar (width remembered), horizontal scroll, **Shift+wheel** for sideways scroll
+- Copy button on every code block (falls back to a selection copy off localhost)
 - Open a default file with `--md`
 - **Daemon mode**: `--daemon` / `--status` / `--stop`, with graceful shutdown
 - Optional **CodingBooth** integration: `--expose` calls `booth--expose` when available
 
 ## Quick start
 
+No Go, no Node. Download the binary for your machine:
+
+### Install Script
+
+On Bash/Zssh
 ```bash
-./build.sh
-./viewmd --folder . --md README.md
-# open http://127.0.0.1:8765/
+curl -fsSL https://github.com/NawaMan/MarkDownViewer/releases/latest/download/install.sh | sh
+```
+
+Or, on PowerShell
+```powershell
+irm https://github.com/NawaMan/MarkDownViewer/releases/latest/download/install.ps1 | iex
+```
+
+It lands in `/usr/local/bin` when that is writable and `~/.local/bin` otherwise
+(`%LOCALAPPDATA%\Programs\viewmd` on Windows, which is added to the user PATH).
+Two knobs, both environment variables: `VIEWMD_INSTALL_DIR` picks the
+directory, `VIEWMD_VERSION` picks a tag other than the newest. An installer
+fetched from a pinned release installs that release, not the newest one.
+
+Run the file directly
+
+**BASH or ZSH**
+```bash
+chmod +x viewmd-linux-amd64
+./viewmd-linux-amd64 --folder . --md README.md
+```
+
+**PowerShell**
+```powershell
+.\viewmd-windows-amd64.exe --folder . --md README.md
+```
+
+Then open : http://127.0.0.1:8765/
+
+### Download the File Directly
+
+|  | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| **x86-64** | [viewmd&#8209;linux&#8209;amd64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-amd64) | [viewmd&#8209;darwin&#8209;amd64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-darwin-amd64) | [viewmd&#8209;windows&#8209;amd64.exe](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-windows-amd64.exe) |
+| **ARM64** | [viewmd&#8209;linux&#8209;arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-arm64) | [viewmd&#8209;darwin&#8209;arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-darwin-arm64) | — |
+
+Then run it — Linux and macOS need the executable bit first:
+
+macOS blocks binaries downloaded by a browser until they are cleared:
+`xattr -d com.apple.quarantine viewmd-darwin-arm64`.
+
+Verify a download against the checksums file (keep the original asset name so
+the entries match; on macOS use `shasum -a 256 -c`):
+
+```bash
+curl -LO https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-amd64
+curl -LO https://github.com/NawaMan/MarkDownViewer/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+chmod +x viewmd-linux-amd64 && ./viewmd-linux-amd64 version
+```
+
+Note the path order: `releases/latest/download/<file>`, not
+`releases/download/latest/<file>` — the latter looks for a tag named `latest`,
+which does not exist.
+
+### Build from Source
+
+```bash
+go install github.com/NawaMan/MarkDownViewer/cmd/viewmd@latest
 ```
 
 ## Usage
@@ -65,10 +127,11 @@ the port is bound, so a failure to start is still reported to your shell:
 
 ```bash
 viewmd --folder ./docs --md intro.md --daemon
-# viewmd v0.1.0 running in background (pid 12345)
+# viewmd v0.3.0--rc1 running in background (pid 12345)
 #   url:      http://0.0.0.0:8765/
 #   pid file: /tmp/viewmd-8765.pid
 #   log file: /tmp/viewmd-8765.log
+#   stop it:  viewmd stop --port 8765
 
 viewmd status          # exit 0 when running, 1 when not
 viewmd stop            # SIGTERM + graceful drain, then removes the pid file
@@ -116,10 +179,11 @@ git push origin main v0.2.0
 ```
 
 `.github/workflows/release.yml` then tests, builds all five targets, and
-publishes a GitHub release with the binaries and a `SHA256SUMS` file. The tag
-must match `version.txt` (`v0.2.0` ↔ `0.2.0`) or the workflow fails before
-publishing anything, and the built binary's `viewmd version` output is checked
-against the tag as well.
+publishes a GitHub release with the binaries, both installers, and a
+`SHA256SUMS` file covering all of them. The tag must match `version.txt`
+(`v0.2.0` ↔ `0.2.0`) or the workflow fails before publishing anything; the
+built binary's `viewmd version` output is checked against the tag, and after
+publishing, the release's own `install.sh` is run and its result checked too.
 
 The release can also be run manually from the Actions tab. There is no tag to
 enter: it is derived from `version.txt` (`0.2.0` → `v0.2.0`), and the workflow
@@ -136,49 +200,14 @@ only when its version is the highest published one, so re-releasing an older
 tag cannot displace a newer one. Pre-release tags (`v1.2.3-rc1`) are never
 marked Latest.
 
-## Install
-
-Every link below points at the newest release — GitHub redirects
-`releases/latest/download/…` to it, so these never need updating:
-
-| Platform | Download |
-| --- | --- |
-| Linux x86-64 | [viewmd-linux-amd64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-amd64) |
-| Linux ARM64 | [viewmd-linux-arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-arm64) |
-| macOS Intel | [viewmd-darwin-amd64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-darwin-amd64) |
-| macOS Apple Silicon | [viewmd-darwin-arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-darwin-arm64) |
-| Windows x86-64 | [viewmd-windows-amd64.exe](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-windows-amd64.exe) |
-| Checksums | [SHA256SUMS](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/SHA256SUMS) |
-
-```bash
-curl -LO https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-amd64
-chmod +x viewmd-linux-amd64
-./viewmd-linux-amd64 version
-```
-
-Verify against the checksums file:
-
-```bash
-curl -LO https://github.com/NawaMan/MarkDownViewer/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing
-```
-
-Note the path order: `releases/latest/download/<file>`, not
-`releases/download/latest/<file>` — the latter looks for a tag named `latest`,
-which does not exist.
-
-Or with Go:
-
-```bash
-go install github.com/NawaMan/MarkDownViewer/cmd/viewmd@latest
-```
-
 ## Layout
 
 ```text
 cmd/viewmd/          Go command (HTTP server, path jail, tree walk, daemon)
 cmd/viewmd/web/      Embedded UI (index.html + vendor/marked.umd.js)
 build.sh
+install.sh          One-line installer (Linux/macOS), published per release
+install.ps1         Same for Windows
 version.txt
 ```
 

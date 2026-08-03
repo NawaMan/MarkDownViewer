@@ -130,6 +130,26 @@ pre {
   padding: .85rem; overflow-x: auto; line-height: 1.45;
 }
 pre code { background: none; padding: 0; font-size: 87.5%; white-space: pre; }
+.code-wrap { position: relative; margin: 0 0 .9rem; }
+.code-wrap > pre { margin: 0; }
+.copy-btn {
+  position: absolute; top: .35rem; right: .35rem;
+  padding: .1rem .45rem;
+  font-family: inherit; font-size: .75rem; line-height: 1.6;
+  color: var(--muted); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; opacity: 0; transition: opacity .12s ease;
+}
+.code-wrap:hover .copy-btn, .copy-btn:focus { opacity: 1; }
+.copy-btn:hover { color: var(--fg); border-color: var(--accent); }
+.copy-btn.copied { color: var(--accent); border-color: var(--accent); opacity: 1; }
+.copy-btn.failed { color: var(--danger); border-color: var(--danger); opacity: 1; }
+/* No hover on touch input, so the button stays put — and needs its own room,
+   since it would otherwise sit on top of the code for good. */
+@media (hover: none) {
+  .copy-btn { opacity: 1; }
+  .code-wrap > pre { padding-right: 3.6rem; }
+}
 .table-wrap { overflow-x: auto; margin: 0 0 .9rem; }
 table { border-collapse: collapse; width: 100%; }
 th, td { border: 1px solid var(--border); padding: .4rem .6rem; text-align: left; vertical-align: top; }
@@ -214,6 +234,61 @@ img { max-width: 100%; }
     });
   }
 
+  // navigator.clipboard is only exposed in a secure context, which a plain
+  // http:// LAN address (--bind 0.0.0.0, --expose) is not. Fall back to the
+  // old selection trick there rather than losing the button entirely.
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) resolve(); else reject(new Error("copy unavailable"));
+    });
+  }
+
+  function addCopyButtons(root) {
+    Array.prototype.forEach.call(root.querySelectorAll("pre"), function (pre) {
+      var wrap = document.createElement("div");
+      wrap.className = "code-wrap";
+      pre.parentNode.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "copy-btn";
+      btn.textContent = "Copy";
+      btn.setAttribute("aria-label", "Copy code to clipboard");
+      var revert;
+      function flash(label, cls) {
+        clearTimeout(revert);
+        btn.classList.remove("copied", "failed");
+        btn.classList.add(cls);
+        btn.textContent = label;
+        revert = setTimeout(function () {
+          btn.classList.remove(cls);
+          btn.textContent = "Copy";
+        }, 1200);
+      }
+      btn.addEventListener("click", function () {
+        copyText(pre.textContent || "").then(
+          function () { flash("Copied", "copied"); },
+          function () { flash("Failed", "failed"); }
+        );
+      });
+      wrap.appendChild(btn);
+    });
+  }
+
   function jumpToHash() {
     if (!location.hash) return;
     var el = document.getElementById(decodeURIComponent(location.hash.slice(1)));
@@ -239,6 +314,7 @@ img { max-width: 100%; }
     content.innerHTML = marked.parse(text, { gfm: true, breaks: false });
     addHeadingIds(content);
     wrapTables(content);
+    addCopyButtons(content);
     content.hidden = false;
     placeholder.hidden = true;
     setActive(path);

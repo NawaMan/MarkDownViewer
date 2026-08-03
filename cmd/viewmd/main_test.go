@@ -128,3 +128,20 @@ func TestStopAndStatusMutuallyExclusive(t *testing.T) {
 		}
 	}
 }
+
+// version.txt is the single source of truth for the version, so the daemon
+// banner quoted in the README must not drift away from it.
+func TestREADMEDaemonBannerMatchesVersionFile(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "version.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# viewmd v" + strings.TrimSpace(string(raw)) + " running in background"
+	if !strings.Contains(string(readme), want) {
+		t.Errorf("README daemon example does not quote %q", want)
+	}
+}
