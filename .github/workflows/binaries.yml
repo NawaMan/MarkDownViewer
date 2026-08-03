@@ -1,0 +1,112 @@
+name: Binaries
+
+# Builds every target once, then runs the resulting binary on a native runner
+# of its own platform. Cross-compiling proves a target links; only executing it
+# proves it runs. Called by both CI and Release so the bits that ship are the
+# bits that were exercised.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit-ish to build (defaults to the caller's ref)
+        type: string
+        required: false
+        default: ''
+    outputs:
+      version:
+        description: Version the built binaries report
+        value: ${{ jobs.build.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build every target
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go test
+        run: go test ./...
+
+      - name: build.sh --all
+        run: ./build.sh --all
+
+      - id: version
+        run: echo "version=$(tr -d ' \t\n\r' < version.txt)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viewmd-binaries
+          path: bin/viewmd-*
+          retention-days: 7
+
+  smoke:
+    name: Run ${{ matrix.asset }} on ${{ matrix.os }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: viewmd-linux-amd64
+          - os: ubuntu-24.04-arm
+            asset: viewmd-linux-arm64
+          - os: macos-15-intel
+            asset: viewmd-darwin-amd64
+          - os: macos-latest
+            asset: viewmd-darwin-arm64
+          - os: windows-latest
+            asset: viewmd-windows-amd64.exe
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: viewmd-binaries
+          path: bin
+
+      # Serve a file and read it back: the version string alone would not
+      # catch a binary that cannot bind, daemonise, or find its embedded UI.
+      - name: Smoke-test the binary
+        shell: bash
+        run: |
+          set -eu
+          bin="$PWD/bin/${{ matrix.asset }}"
+          chmod +x "$bin"
+
+          got="$("$bin" version)"
+          [ "$got" = "${{ needs.build.outputs.version }}" ] \
+            || { echo "::error::${{ matrix.asset }} reports ${got}, expected ${{ needs.build.outputs.version }}"; exit 1; }
+
+          mkdir -p smoke
+          printf '# smoke\n\nserved-from-%s\n' "${{ matrix.asset }}" > smoke/index.md
+
+          "$bin" --folder smoke --md index.md --port 8799 --bind 127.0.0.1 --daemon
+          "$bin" status --port 8799
+          curl -fsS -o /dev/null -w 'GET / -> %{http_code}\n' http://127.0.0.1:8799/
+          body="$(curl -fsS 'http://127.0.0.1:8799/api/file?path=index.md')"
+          case "$body" in
+            *"served-from-${{ matrix.asset }}"*) echo "api/file served the document" ;;
+            *) echo "::error::unexpected body: ${body}"; exit 1 ;;
+          esac
+          "$bin" stop --port 8799
+
+      # The Linux binaries must not need glibc: a cgo-enabled build starts on
+      # the runner but dies on Alpine and distroless-static.
+      - name: Run without glibc
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          file bin/viewmd-linux-amd64 | grep -q "statically linked" \
+            || { echo "::error::viewmd-linux-amd64 is not statically linked"; exit 1; }
+          got="$(docker run --rm -v "$PWD/bin:/rel:ro" alpine:3.20 /rel/viewmd-linux-amd64 version)"
+          [ "$got" = "${{ needs.build.outputs.version }}" ] \
+            || { echo "::error::musl run reports ${got}"; exit 1; }

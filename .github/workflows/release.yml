@@ -16,22 +16,21 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and publish
+  resolve:
+    name: Resolve the tag
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       # fetch-depth: 0 brings the tags along, which the dispatch path needs to
-      # resolve and check out the tag named by version.txt.
+      # resolve the tag named by version.txt.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Resolve the tag
+      # version.txt is the single source of truth for the version the binary
+      # reports, so a tag that disagrees with it would ship a mislabelled build.
+      - id: tag
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             tag="${GITHUB_REF_NAME}"
@@ -43,29 +42,43 @@ jobs:
               echo "::error::tag ${tag} does not exist — create and push it first"
               exit 1
             fi
-            # Build the tagged commit, not whatever the dispatch ref points at.
+            # Judge the tagged commit, not whatever the dispatch ref points at.
             git checkout -q "refs/tags/${tag}"
           fi
-          echo "TAG=${tag}" >> "$GITHUB_ENV"
-
-      # version.txt is the single source of truth for the version the binary
-      # reports, so a tag that disagrees with it would ship a mislabelled build.
-      # Re-checked after the checkout above, which may have moved the worktree.
-      - name: Check version.txt matches the tag
-        run: |
-          want="${TAG#v}"
+          want="${tag#v}"
           got="$(tr -d ' \t\n\r' < version.txt)"
           if [ "$want" != "$got" ]; then
-            echo "::error::tag ${TAG} implies version ${want}, but version.txt says ${got}"
+            echo "::error::tag ${tag} implies version ${want}, but version.txt says ${got}"
             exit 1
           fi
           echo "Releasing viewmd ${got}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
-      - name: Test
-        run: go test ./...
+  # Tests, cross-compiles, and runs every binary on a native runner of its own
+  # platform. Nothing is published unless all five actually start and serve.
+  binaries:
+    name: Binaries
+    needs: resolve
+    uses: ./.github/workflows/binaries.yml
+    with:
+      ref: refs/tags/${{ needs.resolve.outputs.tag }}
 
-      - name: Build all platforms
-        run: ./build.sh --all
+  publish:
+    name: Publish
+    needs: [resolve, binaries]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
+
+      # The very binaries the smoke jobs just ran, rather than a rebuild.
+      - uses: actions/download-artifact@v4
+        with:
+          name: viewmd-binaries
+          path: bin
 
       # The installers ship beside the binaries so the one-liner in the README
       # can fetch them from releases/latest/download/. Each carries the tag it
@@ -88,18 +101,6 @@ jobs:
         run: |
           sha256sum viewmd-* install.sh install.ps1 > SHA256SUMS
           cat SHA256SUMS
-
-      # Confirm the shipped binary reports the version it claims to be, and
-      # that it starts without glibc — a cgo-enabled build links against the
-      # runner's libc and dies on Alpine or a distroless-static image.
-      - name: Smoke-test the linux binary
-        run: |
-          got="$(./bin/viewmd-linux-amd64 version)"
-          [ "$got" = "${TAG#v}" ] || { echo "::error::binary reports ${got}, expected ${TAG#v}"; exit 1; }
-          file bin/viewmd-linux-amd64 | grep -q "statically linked" \
-            || { echo "::error::viewmd-linux-amd64 is not statically linked"; exit 1; }
-          musl="$(docker run --rm -v "$PWD/bin:/rel:ro" alpine:3.20 /rel/viewmd-linux-amd64 version)"
-          [ "$musl" = "${TAG#v}" ] || { echo "::error::musl smoke test reports ${musl}"; exit 1; }
 
       - name: Publish release
         env:

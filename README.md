@@ -167,8 +167,13 @@ are static and run on musl (Alpine) and distroless images too.
 ## Releases
 
 CI (`.github/workflows/ci.yml`) vets and formats on Linux, runs the tests on
-Linux/macOS/Windows plus a race-detector pass, and cross-compiles every target
-on each push and pull request.
+Linux/macOS/Windows plus a race-detector pass, and then hands off to
+`binaries.yml`: it builds all five targets once and *runs* each one on a native
+runner of its own platform — Linux x86-64 and ARM64, macOS Intel and Apple
+Silicon, Windows — serving a document over HTTP and reading it back. The Linux
+x86-64 binary additionally has to start inside Alpine, which has no glibc.
+
+`Release` reuses that same workflow and publishes only what passed it.
 
 To cut a release, bump `version.txt` and push a matching tag:
 

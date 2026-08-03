@@ -75,21 +75,6 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -race ./...
 
-  build:
-    name: Cross-compile
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: build.sh --all
-        run: ./build.sh --all
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: viewmd-binaries
-          path: bin/viewmd-*
-          retention-days: 7
+  binaries:
+    name: Binaries
+    uses: ./.github/workflows/binaries.yml
