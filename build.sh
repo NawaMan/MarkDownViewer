@@ -10,6 +10,11 @@ LDFLAGS="-X main.version=${VERSION}"
 APP=viewmd
 PKG=./cmd/viewmd
 
+# Pure Go, no cgo. Cross-compiled targets get this for free, but a native
+# linux/amd64 build would otherwise link against the host glibc and refuse to
+# start on musl (Alpine) or a distroless-static image.
+export CGO_ENABLED=0
+
 mkdir -p bin
 
 echo "Building ${APP} v${VERSION}"

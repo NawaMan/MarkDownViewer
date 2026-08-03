@@ -89,11 +89,17 @@ jobs:
           sha256sum viewmd-* install.sh install.ps1 > SHA256SUMS
           cat SHA256SUMS
 
-      # Confirm the shipped binary reports the version it claims to be.
+      # Confirm the shipped binary reports the version it claims to be, and
+      # that it starts without glibc — a cgo-enabled build links against the
+      # runner's libc and dies on Alpine or a distroless-static image.
       - name: Smoke-test the linux binary
         run: |
           got="$(./bin/viewmd-linux-amd64 version)"
           [ "$got" = "${TAG#v}" ] || { echo "::error::binary reports ${got}, expected ${TAG#v}"; exit 1; }
+          file bin/viewmd-linux-amd64 | grep -q "statically linked" \
+            || { echo "::error::viewmd-linux-amd64 is not statically linked"; exit 1; }
+          musl="$(docker run --rm -v "$PWD/bin:/rel:ro" alpine:3.20 /rel/viewmd-linux-amd64 version)"
+          [ "$musl" = "${TAG#v}" ] || { echo "::error::musl smoke test reports ${musl}"; exit 1; }
 
       - name: Publish release
         env:

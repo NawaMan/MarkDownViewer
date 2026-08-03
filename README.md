@@ -127,7 +127,7 @@ the port is bound, so a failure to start is still reported to your shell:
 
 ```bash
 viewmd --folder ./docs --md intro.md --daemon
-# viewmd v0.3.0 running in background (pid 12345)
+# viewmd v0.3.1 running in background (pid 12345)
 #   url:      http://0.0.0.0:8765/
 #   pid file: /tmp/viewmd-8765.pid
 #   log file: /tmp/viewmd-8765.log
@@ -161,7 +161,8 @@ rather than signalling it, since there is no SIGTERM delivery.
 ./build.sh --all     # also bin/viewmd-<os>-<arch>
 ```
 
-Requires Go 1.24+.
+Requires Go 1.24+. Builds are pure Go (`CGO_ENABLED=0`), so the Linux binaries
+are static and run on musl (Alpine) and distroless images too.
 
 ## Releases
 

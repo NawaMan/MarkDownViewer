@@ -67,7 +67,10 @@ try {
   Move-Item -Path $exe -Destination $dest -Force
 
   if ($onWindows) {
-    Write-Host "Installed viewmd $(& $dest version) to $dest"
+    # A binary that lands but cannot start must not be called a success.
+    $installed = & $dest version 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "installed $dest, but it does not run on this system" }
+    Write-Host "Installed viewmd $installed to $dest"
     # Persist the directory on the user's PATH so a new shell finds viewmd.
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if (($userPath -split ';') -notcontains $dir) {

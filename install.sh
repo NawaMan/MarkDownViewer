@@ -85,7 +85,12 @@ chmod +x "$tmp/viewmd"
 mkdir -p "$dir" || die "cannot create $dir"
 mv "$tmp/viewmd" "$dir/viewmd" || die "cannot write to $dir (set VIEWMD_INSTALL_DIR or re-run with sudo)"
 
-echo "Installed viewmd $("$dir/viewmd" version) to $dir/viewmd"
+# A binary that lands but cannot start (wrong libc, wrong arch) must not be
+# reported as a successful install.
+if ! installed="$("$dir/viewmd" version 2>/dev/null)"; then
+  die "installed $dir/viewmd, but it does not run on this system"
+fi
+echo "Installed viewmd $installed to $dir/viewmd"
 case ":$PATH:" in
   *":$dir:"*) ;;
   *) echo "Note: $dir is not on your PATH — add it, or run $dir/viewmd directly" ;;
