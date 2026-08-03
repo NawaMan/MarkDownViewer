@@ -28,9 +28,7 @@ $base = if ($version -eq 'dev') {
 
 $arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
   'X64'   { 'amd64' }
-  # Windows on ARM runs x64 binaries under emulation, and there is no native
-  # arm64 build to prefer over that.
-  'Arm64' { Write-Warning 'No native arm64 build — installing the x64 one (emulated).'; 'amd64' }
+  'Arm64' { 'arm64' }
   default { throw "unsupported architecture $_" }
 }
 $asset = "viewmd-windows-$arch.exe"

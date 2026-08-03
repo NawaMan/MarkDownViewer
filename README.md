@@ -57,7 +57,7 @@ Then open : http://127.0.0.1:8765/
 |  | Linux | macOS | Windows |
 | --- | --- | --- | --- |
 | **x86-64** | [viewmd&#8209;linux&#8209;amd64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-amd64) | [viewmd&#8209;darwin&#8209;amd64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-darwin-amd64) | [viewmd&#8209;windows&#8209;amd64.exe](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-windows-amd64.exe) |
-| **ARM64** | [viewmd&#8209;linux&#8209;arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-arm64) | [viewmd&#8209;darwin&#8209;arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-darwin-arm64) | — |
+| **ARM64** | [viewmd&#8209;linux&#8209;arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-linux-arm64) | [viewmd&#8209;darwin&#8209;arm64](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-darwin-arm64) | [viewmd&#8209;windows&#8209;arm64.exe](https://github.com/NawaMan/MarkDownViewer/releases/latest/download/viewmd-windows-arm64.exe) |
 
 Then run it — Linux and macOS need the executable bit first:
 
@@ -168,10 +168,11 @@ are static and run on musl (Alpine) and distroless images too.
 
 CI (`.github/workflows/ci.yml`) vets and formats on Linux, runs the tests on
 Linux/macOS/Windows plus a race-detector pass, and then hands off to
-`binaries.yml`: it builds all five targets once and *runs* each one on a native
+`binaries.yml`: it builds all six targets once and *runs* each one on a native
 runner of its own platform — Linux x86-64 and ARM64, macOS Intel and Apple
-Silicon, Windows — serving a document over HTTP and reading it back. The Linux
-x86-64 binary additionally has to start inside Alpine, which has no glibc.
+Silicon, Windows x86-64 and ARM64 — serving a document over HTTP and reading it
+back. The Linux x86-64 binary additionally has to start inside Alpine, which
+has no glibc.
 
 `Release` reuses that same workflow and publishes only what passed it.
 
@@ -184,7 +185,7 @@ git tag v0.2.0
 git push origin main v0.2.0
 ```
 
-`.github/workflows/release.yml` then tests, builds all five targets, and
+`.github/workflows/release.yml` then tests, builds all six targets, and
 publishes a GitHub release with the binaries, both installers, and a
 `SHA256SUMS` file covering all of them. The tag must match `version.txt`
 (`v0.2.0` ↔ `0.2.0`) or the workflow fails before publishing anything; the

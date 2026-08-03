@@ -68,6 +68,8 @@ jobs:
             asset: viewmd-darwin-arm64
           - os: windows-latest
             asset: viewmd-windows-amd64.exe
+          - os: windows-11-arm
+            asset: viewmd-windows-arm64.exe
     steps:
       - uses: actions/download-artifact@v4
         with:

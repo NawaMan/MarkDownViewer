@@ -55,7 +55,7 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
   # Tests, cross-compiles, and runs every binary on a native runner of its own
-  # platform. Nothing is published unless all five actually start and serve.
+  # platform. Nothing is published unless all six actually start and serve.
   binaries:
     name: Binaries
     needs: resolve

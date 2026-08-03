@@ -27,7 +27,7 @@ go build -ldflags "$LDFLAGS" -o "$LOCAL" "$PKG"
 echo "  -> $LOCAL ($(du -h "$LOCAL" | cut -f1))"
 
 if [[ "${1:-}" == "--all" ]]; then
-  for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+  for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
     GOOS="${pair%/*}"
     GOARCH="${pair#*/}"
     out="bin/${APP}-${GOOS}-${GOARCH}"

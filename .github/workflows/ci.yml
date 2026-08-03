@@ -36,7 +36,7 @@ jobs:
       # The daemon has per-OS implementations; make sure they all still compile.
       - name: Vet every target platform
         run: |
-          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             echo "vet ${pair}"
             GOOS="${pair%/*}" GOARCH="${pair#*/}" go vet ./...
           done

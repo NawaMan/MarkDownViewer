@@ -14,7 +14,7 @@ Instructions for AI agents working in this repository.
 
 ```bash
 ./build.sh              # ./viewmd for this machine
-./build.sh --all        # also bin/viewmd-<os>-<arch> for all five targets
+./build.sh --all        # also bin/viewmd-<os>-<arch> for all six targets
 go test ./...           # full suite
 gofmt -l cmd            # must print nothing
 go vet ./...
