@@ -41,6 +41,38 @@ func TestReadPidFileRejectsGarbage(t *testing.T) {
 	}
 }
 
+// An orphaned daemon under a pid 1 that does not reap stays a zombie after it
+// exits, and a zombie answers signal 0. Treating that as "still running" made
+// `viewmd stop` wait out its whole timeout and then report a failure for a
+// process that had already gone.
+func TestProcessAliveRejectsZombie(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("zombie state is only observable through /proc")
+	}
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	// Deliberately unreaped until the test ends: that is what makes a zombie.
+	defer func() { _ = cmd.Wait() }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		if err == nil {
+			if end := strings.LastIndex(string(stat), ")"); end >= 0 && len(stat) > end+2 && stat[end+2] == 'Z' {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if processAlive(pid) {
+		t.Errorf("processAlive(%d) = true for a zombie, want false", pid)
+	}
+}
+
 func TestRunningPidStates(t *testing.T) {
 	dir := t.TempDir()
 
