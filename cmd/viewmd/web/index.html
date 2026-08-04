@@ -11,12 +11,14 @@
   --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0;
   --code-bg: #f6f8fa; --table-alt: #f6f8fa; --link: #0969da;
   --panel: #f6f8fa; --accent: #0969da; --sel: #ddf4ff; --danger: #cf222e;
+  --folder: #bf8700;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
     --code-bg: #151b23; --table-alt: #151b23; --link: #4493f8;
     --panel: #151b23; --accent: #4493f8; --sel: #12263a; --danger: #ff7b72;
+    --folder: #e3b341;
   }
 }
 * { box-sizing: border-box; }
@@ -78,15 +80,49 @@ body.sidebar-resizing #content { pointer-events: none; }
   font-size: .7rem; text-transform: uppercase; letter-spacing: .04em;
   color: var(--muted); margin: .4rem .85rem; font-weight: 600;
 }
-#tree { list-style: none; margin: 0; padding: 0; width: max-content; min-width: 100%; }
+/* Depth is carried by a --depth custom property set in JS rather than by
+   padding on the nested <ul>, so every row still spans the full sidebar
+   width — the active background and accent bar stay flush with the left
+   edge instead of stepping inward with the tree. A file sits one level
+   deeper than the folder holding it. */
+#tree { list-style: none; margin: 0; padding: 0; width: max-content; min-width: 100%;
+  --indent: 1.15rem; --gutter: .85rem; }
 #tree li { margin: 0; }
 #tree ul { list-style: none; margin: 0; padding: 0; width: max-content; min-width: 100%; }
+/* Sidebar icons. Drawn as masks filled with currentColor so they follow the
+   light/dark theme and the muted/active text colors for free. */
+#tree button.file::before,
+#tree .dir-label::before {
+  content: "";
+  display: inline-block;
+  width: 1em; height: 1em;
+  margin-right: .45em;
+  vertical-align: -.15em;
+  background-color: currentColor;
+  -webkit-mask: var(--icon) center / contain no-repeat;
+  mask: var(--icon) center / contain no-repeat;
+}
+#tree button.file::before {
+  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpolyline points='14 2 14 8 20 8'/%3E%3C/svg%3E");
+}
+/* Folders are filled rather than outlined so the colour actually reads at
+   16px, and tinted with --folder instead of currentColor so they stay
+   distinct from the muted label text. */
+#tree .dir-label::before {
+  background-color: var(--folder);
+  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M3 5.5A1.5 1.5 0 0 1 4.5 4h4.1c.4 0 .78.16 1.06.44L11.2 6h8.3A1.5 1.5 0 0 1 21 7.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z'/%3E%3C/svg%3E");
+}
+#tree .dir-label[aria-expanded="true"]::before {
+  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M3 5.5A1.5 1.5 0 0 1 4.5 4h4.1c.4 0 .78.16 1.06.44L11.2 6h8.3A1.5 1.5 0 0 1 21 7.5V9.5H8.3a2 2 0 0 0-1.9 1.37L3 20.5z'/%3E%3Cpath fill='%23000' d='M7.35 11.9A1.5 1.5 0 0 1 8.77 10.9h13.1a1 1 0 0 1 .95 1.32l-2.3 6.9A1.5 1.5 0 0 1 19.1 20.2H3.9a1 1 0 0 1-.95-1.32z'/%3E%3C/svg%3E");
+}
 #tree button.file {
   display: block;
   width: max-content;
   min-width: 100%;
   text-align: left; border: 0; background: transparent;
-  color: var(--fg); font: inherit; font-size: .88rem; padding: .28rem .85rem;
+  color: var(--fg); font: inherit; font-size: .88rem;
+  padding: .28rem var(--gutter) .28rem
+           calc(var(--gutter) + (var(--depth, 0) + 1) * var(--indent));
   cursor: pointer; border-left: 3px solid transparent;
   white-space: nowrap;
 }
@@ -98,10 +134,16 @@ body.sidebar-resizing #content { pointer-events: none; }
   display: block;
   width: max-content;
   min-width: 100%;
-  padding: .35rem .85rem .15rem; font-size: .75rem;
+  padding: .35rem var(--gutter) .15rem
+           calc(var(--gutter) + var(--depth, 0) * var(--indent));
+  font-size: .75rem;
   color: var(--muted); font-weight: 600;
   white-space: nowrap;
+  text-align: left; border: 0; background: transparent;
+  font-family: inherit; cursor: pointer;
 }
+#tree .dir-label:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+#tree .dir-label:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #main { flex: 1; overflow: auto; padding: 1.25rem 1.5rem 4rem; }
 #main .empty { color: var(--muted); max-width: 36rem; }
 #content { max-width: 52rem; }
@@ -153,6 +195,11 @@ pre code { background: none; padding: 0; font-size: 87.5%; white-space: pre; }
 .table-wrap { overflow-x: auto; margin: 0 0 .9rem; }
 table { border-collapse: collapse; width: 100%; }
 th, td { border: 1px solid var(--border); padding: .4rem .6rem; text-align: left; vertical-align: top; }
+/* Marked emits the legacy align="" attribute for :---: / ---: columns. That is
+   only a presentational hint, so it loses to the rule above and the alignment
+   was silently dropped; these selectors outrank it and restore it. */
+th[align="center"], td[align="center"] { text-align: center; }
+th[align="right"], td[align="right"] { text-align: right; }
 th { background: var(--table-alt); font-weight: 600; }
 tbody tr:nth-child(even) { background: var(--table-alt); }
 blockquote {
@@ -202,6 +249,29 @@ img { max-width: 100%; }
   var meta = document.getElementById("meta");
   var errBox = document.getElementById("err");
   var activePath = null;
+
+  // Collapsed folders are stored by path, so the default (absent) state is
+  // open and a tree that grows new folders shows them without a nudge.
+  var COLLAPSED_KEY = "viewmd.collapsedDirs";
+  var collapsedDirs = loadCollapsed();
+
+  function loadCollapsed() {
+    var set = Object.create(null);
+    try {
+      var raw = localStorage.getItem(COLLAPSED_KEY);
+      var list = raw ? JSON.parse(raw) : [];
+      if (Object.prototype.toString.call(list) === "[object Array]") {
+        list.forEach(function (p) { if (typeof p === "string") set[p] = true; });
+      }
+    } catch (e) { /* ignore */ }
+    return set;
+  }
+
+  function saveCollapsed() {
+    try {
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify(Object.keys(collapsedDirs)));
+    } catch (e) { /* ignore */ }
+  }
 
   function showError(msg) { errBox.textContent = msg || ""; }
 
@@ -300,9 +370,13 @@ img { max-width: 100%; }
 
   function setActive(path) {
     activePath = path;
+    var active = null;
     Array.prototype.forEach.call(treeEl.querySelectorAll("button.file"), function (b) {
-      b.classList.toggle("active", b.getAttribute("data-path") === path);
+      var on = b.getAttribute("data-path") === path;
+      b.classList.toggle("active", on);
+      if (on) active = b;
     });
+    if (active) revealAncestors(active);
   }
 
   function renderMarkdown(text, path) {
@@ -344,13 +418,15 @@ img { max-width: 100%; }
       });
   }
 
-  function appendFiles(parentUl, files, dirs, prefix) {
+  function appendFiles(parentUl, files, dirs, prefix, depth) {
+    depth = depth || 0;
     files.forEach(function (name) {
       var path = prefix ? prefix + "/" + name : name;
       var li = document.createElement("li");
       var btn = document.createElement("button");
       btn.type = "button";
       btn.className = "file";
+      btn.style.setProperty("--depth", depth);
       btn.setAttribute("data-path", path);
       btn.setAttribute("title", path);
       btn.textContent = name;
@@ -362,19 +438,56 @@ img { max-width: 100%; }
       var child = dirs[dirName];
       var pathPrefix = prefix ? prefix + "/" + dirName : dirName;
       var li = document.createElement("li");
-      var label = document.createElement("span");
+      var label = document.createElement("button");
+      label.type = "button";
       label.className = "dir-label";
+      label.style.setProperty("--depth", depth);
+      // The indent shows where this folder sits, so the label only needs its
+      // own name. The full path stays in the tooltip.
       label.setAttribute("title", pathPrefix + "/");
-      label.textContent = pathPrefix + "/";
+      label.setAttribute("data-dir", pathPrefix);
+      label.textContent = dirName + "/";
       li.appendChild(label);
       var sub = document.createElement("ul");
-      sub.style.listStyle = "none";
-      sub.style.margin = "0";
-      sub.style.padding = "0";
-      appendFiles(sub, child.files || [], child.dirs || {}, pathPrefix);
+      appendFiles(sub, child.files || [], child.dirs || {}, pathPrefix, depth + 1);
       li.appendChild(sub);
+      // Folders are open unless the user collapsed this one before.
+      setOpen(label, sub, !collapsedDirs[pathPrefix]);
+      label.addEventListener("click", function () {
+        var open = label.getAttribute("aria-expanded") !== "true";
+        setOpen(label, sub, open);
+        if (open) delete collapsedDirs[pathPrefix];
+        else collapsedDirs[pathPrefix] = true;
+        saveCollapsed();
+      });
       parentUl.appendChild(li);
     });
+  }
+
+  function setOpen(label, sub, open) {
+    label.setAttribute("aria-expanded", open ? "true" : "false");
+    sub.hidden = !open;
+  }
+
+  // Expand every folder above `el` so a file selected from a URL or a link is
+  // not left hidden inside a collapsed branch.
+  function revealAncestors(el) {
+    var changed = false;
+    var node = el.parentNode;
+    while (node && node !== treeEl) {
+      if (node.tagName === "LI") {
+        var label = node.firstChild;
+        var sub = label && label.nextSibling;
+        if (label && label.className === "dir-label" &&
+            label.getAttribute("aria-expanded") === "false") {
+          setOpen(label, sub, true);
+          delete collapsedDirs[label.getAttribute("data-dir")];
+          changed = true;
+        }
+      }
+      node = node.parentNode;
+    }
+    if (changed) saveCollapsed();
   }
 
   function buildTree(nodes) {
