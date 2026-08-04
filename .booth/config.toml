@@ -1,8 +1,10 @@
-# Configured by: booth config --no-tui --overwrite --variant terminal --select go+vscode-ext+go-mod/claude-code+auto-accept+credential+settings-cache
+# Configured by: booth config --no-tui --overwrite --variant terminal --port ${NEXT:-33000} --expose +987 --select go+vscode-ext+go-mod/claude-code+auto-accept+credential+settings-cache
 
 variant = "terminal"
+port = "${NEXT:-33000}"
 
 run-args = [
     "-v", "~/.claude.json:/etc/cb-home-seed/.claude.json:ro",
-    "-v", "~/.claude/.credentials.json:/etc/cb-home/.claude/.credentials.json:ro"
+    "-v", "~/.claude/.credentials.json:/etc/cb-home/.claude/.credentials.json:ro",
+    "--publish", "+987:987"
 ]
