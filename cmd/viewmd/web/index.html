@@ -244,6 +244,7 @@ img { max-width: 100%; }
   "use strict";
 
   var treeEl = document.getElementById("tree");
+  var mainEl = document.getElementById("main");
   var content = document.getElementById("content");
   var placeholder = document.getElementById("placeholder");
   var meta = document.getElementById("meta");
@@ -359,13 +360,107 @@ img { max-width: 100%; }
     });
   }
 
-  function jumpToHash() {
-    if (!location.hash) return;
-    var el = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+  function jumpToHash(hash) {
+    if (!hash) return;
+    var el = document.getElementById(decodeURIComponent(hash.replace(/^#/, "")));
     if (!el) return;
     var jump = function () { el.scrollIntoView(); };
     jump();
     requestAnimationFrame(jump);
+  }
+
+  // ── relative links and images ──────────────────────────
+  // A Markdown file writes its links relative to itself — README.md in
+  // CodingBooth/ says `docs/logo.png` and means CodingBooth/docs/logo.png.
+  // The viewer is a single page served at "/", though, so the browser would
+  // resolve that against the site root and miss by exactly the file's own
+  // directory. Every local target therefore gets rebased onto that directory
+  // and pointed at the API that can actually serve it.
+
+  var MD_EXT = /\.(md|markdown|mdown|mkd)$/i;
+  // Anything with a scheme (http:, data:, mailto:) or protocol-relative is
+  // somebody else's to resolve.
+  var HAS_SCHEME = /^[a-z][a-z0-9+.\-]*:/i;
+
+  function isExternal(url) {
+    return HAS_SCHEME.test(url) || url.slice(0, 2) === "//";
+  }
+
+  function dirOf(path) {
+    var i = path.lastIndexOf("/");
+    return i < 0 ? "" : path.slice(0, i);
+  }
+
+  // Resolves rel against the directory base, collapsing "." and ".." the way
+  // a filesystem would. A leading "/" means the served root. Returns null when
+  // the path climbs above that root — the server would refuse it anyway.
+  function joinPath(base, rel) {
+    var parts = (rel.charAt(0) === "/" ? "" : base + "/").concat(rel).split("/");
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (p === "" || p === ".") continue;
+      if (p === "..") {
+        if (!out.length) return null;
+        out.pop();
+        continue;
+      }
+      out.push(p);
+    }
+    return out.join("/");
+  }
+
+  // Splits a trailing #fragment off a link target.
+  function splitHash(url) {
+    var i = url.indexOf("#");
+    if (i < 0) return { path: url, hash: "" };
+    return { path: url.slice(0, i), hash: url.slice(i) };
+  }
+
+  function assetURL(path) {
+    return "/api/asset?path=" + encodeURIComponent(path);
+  }
+
+  function viewerURL(path, hash) {
+    return "?md=" + encodeURIComponent(path) + (hash || "");
+  }
+
+  function rewriteRelativeURLs(root, base) {
+    Array.prototype.forEach.call(
+      root.querySelectorAll("img[src], source[src], video[src], audio[src]"),
+      function (el) {
+        var raw = el.getAttribute("src") || "";
+        if (!raw || isExternal(raw)) return;
+        var target = joinPath(base, splitHash(raw).path);
+        if (!target) return;
+        el.setAttribute("src", assetURL(target));
+      }
+    );
+
+    Array.prototype.forEach.call(root.querySelectorAll("a[href]"), function (a) {
+      var raw = a.getAttribute("href") || "";
+      if (!raw || raw.charAt(0) === "#") return; // in-page anchor: already correct
+      if (isExternal(raw)) {
+        // Leaving the site loses the reader's place in the file they were
+        // reading, so send off-site links to their own tab.
+        if (/^https?:/i.test(raw)) {
+          a.setAttribute("target", "_blank");
+          a.setAttribute("rel", "noopener noreferrer");
+        }
+        return;
+      }
+      var parts = splitHash(raw);
+      var target = joinPath(base, parts.path);
+      if (!target) return;
+      if (MD_EXT.test(target)) {
+        // A real href, so middle-click and "open in new tab" still work; the
+        // click handler below turns a plain click into an in-page load.
+        a.setAttribute("href", viewerURL(target, parts.hash));
+        a.setAttribute("data-md", target);
+      } else {
+        a.setAttribute("href", assetURL(target) + parts.hash);
+      }
+    });
   }
 
   function setActive(path) {
@@ -379,13 +474,22 @@ img { max-width: 100%; }
     if (active) revealAncestors(active);
   }
 
-  function renderMarkdown(text, path) {
+  function renderMarkdown(text, path, hash, historyMode) {
     showError("");
     if (typeof marked === "undefined") {
       showError("Markdown library missing.");
       return;
     }
-    content.innerHTML = marked.parse(text, { gfm: true, breaks: false });
+    // Parsed into an inert document first: assigning the raw HTML straight to
+    // content would start fetching every image at its unrebased path, so the
+    // rewrite below would only ever be a correction after a wasted 404.
+    var parsed = new DOMParser().parseFromString(
+      marked.parse(text, { gfm: true, breaks: false }), "text/html");
+    rewriteRelativeURLs(parsed.body, dirOf(path));
+    content.innerHTML = "";
+    var imported = document.importNode(parsed.body, true);
+    while (imported.firstChild) content.appendChild(imported.firstChild);
+
     addHeadingIds(content);
     wrapTables(content);
     addCopyButtons(content);
@@ -396,27 +500,57 @@ img { max-width: 100%; }
     var label = path.split("/").pop();
     meta.innerHTML = "Showing <strong></strong>";
     meta.querySelector("strong").textContent = label;
-    // Update URL without reload so refresh keeps the file
+    // Keep the address bar on the file being read, so a refresh or a copied
+    // link comes back to it. Following a link pushes, so Back returns to the
+    // file the link was in; everything else replaces.
     try {
       var u = new URL(location.href);
       u.searchParams.set("md", path);
-      history.replaceState(null, "", u.pathname + u.search + u.hash);
+      var url = u.pathname + u.search + (hash || "");
+      if (historyMode === "push") history.pushState(null, "", url);
+      else if (historyMode !== "none") history.replaceState(null, "", url);
     } catch (e) { /* ignore */ }
-    jumpToHash();
+    mainEl.scrollTop = 0;
+    jumpToHash(hash);
   }
 
-  function loadFile(path) {
+  function loadFile(path, hash, historyMode) {
     showError("");
     return fetch("/api/file?path=" + encodeURIComponent(path))
       .then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error(t || r.statusText); });
         return r.text();
       })
-      .then(function (text) { renderMarkdown(text, path); })
+      .then(function (text) {
+        renderMarkdown(text, path, hash || "", historyMode || "replace");
+      })
       .catch(function (e) {
         showError("Could not load " + path + ": " + (e && e.message ? e.message : e));
       });
   }
+
+  // Links between Markdown files load in place rather than reloading the
+  // viewer. The href is left intact so the browser's own modifiers keep
+  // working; only an unmodified left click is taken over.
+  content.addEventListener("click", function (e) {
+    if (e.defaultPrevented || e.button !== 0) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    var a = e.target;
+    while (a && a !== content && a.tagName !== "A") a = a.parentNode;
+    if (!a || a === content) return;
+    var target = a.getAttribute("data-md");
+    if (!target) return;
+    e.preventDefault();
+    loadFile(target, a.hash || "", "push");
+  });
+
+  // Back / Forward across those in-page loads.
+  window.addEventListener("popstate", function () {
+    var path = null;
+    try { path = new URL(location.href).searchParams.get("md"); } catch (e) { /* ignore */ }
+    if (!path) return;
+    loadFile(path.replace(/^\.\//, ""), location.hash, "none");
+  });
 
   function appendFiles(parentUl, files, dirs, prefix, depth) {
     depth = depth || 0;
@@ -656,7 +790,7 @@ img { max-width: 100%; }
         // accept with or without leading ./
         want = want.replace(/^\.\//, "");
         if (paths.indexOf(want) >= 0) {
-          return loadFile(want);
+          return loadFile(want, location.hash, "replace");
         }
         showError("Initial file not found: " + want);
       }

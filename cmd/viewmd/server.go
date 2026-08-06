@@ -32,6 +32,7 @@ func (s *viewServer) routes() http.Handler {
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/tree", s.handleTree)
 	mux.HandleFunc("/api/file", s.handleFile)
+	mux.HandleFunc("/api/asset", s.handleAsset)
 	mux.Handle("/vendor/", http.FileServer(http.FS(s.web)))
 	mux.HandleFunc("/", s.handleIndex)
 	return mux
@@ -103,6 +104,57 @@ func (s *viewServer) handleFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(data)
+}
+
+// handleAsset serves the images, media and fonts a Markdown page embeds or
+// links to. The viewer resolves those paths against the directory of the file
+// that mentions them before asking, so `path` is already root-relative here.
+func (s *viewServer) handleAsset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rel := r.URL.Query().Get("path")
+	abs, _, err := resolveUnderRoot(s.root, rel)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctype := assetContentType(abs)
+	if ctype == "" {
+		http.Error(w, "not a file type viewmd serves", http.StatusForbidden)
+		return
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "file not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if st.IsDir() {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// An SVG is a document, not just a picture: opened as a top-level page it
+	// would run its own scripts on this origin. Inside <img> it is already
+	// inert and the header is ignored, so this costs nothing where it matters.
+	if strings.EqualFold(filepath.Ext(abs), ".svg") {
+		w.Header().Set("Content-Security-Policy", "sandbox")
+	}
+	// ServeContent rather than io.Copy: it answers Range requests, which is
+	// what lets a browser seek in an embedded video.
+	http.ServeContent(w, r, filepath.Base(abs), st.ModTime(), f)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

@@ -9,6 +9,8 @@ Browse a folder of Markdown files in your browser — single Go binary, embedded
 
 - Serve any directory of `*.md` / `*.markdown` files over HTTP
 - Sidebar file tree + GitHub-flavoured rendering ([Marked](https://github.com/markedjs/marked))
+- Relative images and links work: they resolve against the file that wrote
+  them, and links between Markdown files load in place (Back works)
 - Resizable sidebar (width remembered), horizontal scroll, **Shift+wheel** for sideways scroll
 - Copy button on every code block (falls back to a selection copy off localhost)
 - Open a default file with `--md`
@@ -119,6 +121,29 @@ viewmd --md README.md --port 9000
 viewmd --folder . --md README.md --expose          # host port = server port
 viewmd --md README.md --expose 18765               # host 18765 → container port
 ```
+
+## Relative images and links
+
+A Markdown file writes its links relative to itself: `CodingBooth/README.md`
+says `docs/logo.png` and means `CodingBooth/docs/logo.png`. The viewer is a
+single page served at `/`, so the browser would otherwise resolve that against
+the site root and miss by the file's own directory. viewmd rebases every local
+target onto the directory of the file that wrote it, so pointing `--folder` at
+a parent of the repo works the same as pointing it at the repo.
+
+From there:
+
+- **Images, video, audio, fonts and PDFs** are served from `/api/asset`.
+- **Links to other Markdown files** load in place, so the sidebar and the
+  address bar keep up and Back returns to the file the link was in. The `href`
+  stays real, so middle-click and "open in new tab" still work.
+- **Links off-site** open in a new tab; `#anchors` and `data:` URIs are left
+  alone.
+
+Only the file types a Markdown page can actually embed are served. A repo root
+holds `.env`, `.git/config` and CI secrets next to its docs, and viewmd binds
+`0.0.0.0` by default — so anything outside that list answers `403`, and a path
+that climbs above `--folder` answers `400`.
 
 ## Daemon mode
 

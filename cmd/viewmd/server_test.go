@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -68,6 +69,103 @@ func TestAPITreeAndFile(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != 400 {
 		t.Fatalf("escape status %d", rr.Code)
+	}
+}
+
+// A 1x1 PNG, enough to prove bytes come back untouched.
+var onePixelPNG = []byte{
+	0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a,
+	0x00, 0x00, 0x00, 0x0d, 'I', 'H', 'D', 'R',
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+	0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+}
+
+func TestAPIAsset(t *testing.T) {
+	s, root := testServer(t)
+	h := s.routes()
+
+	if err := os.MkdirAll(filepath.Join(root, "sub", "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	img := filepath.Join(root, "sub", "docs", "logo.png")
+	if err := os.WriteFile(img, onePixelPNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "sub", ".env"), []byte("SECRET=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/asset?path=sub/docs/logo.png", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("asset status %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("content type %q", got)
+	}
+	if !bytes.Equal(rr.Body.Bytes(), onePixelPNG) {
+		t.Fatalf("asset body differs (%d bytes)", rr.Body.Len())
+	}
+
+	// Files outside the allowlist stay unreachable even though they sit
+	// under the served root.
+	for _, path := range []string{"sub/.env", "README.md"} {
+		rr = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, "/api/asset?path="+path, nil)
+		h.ServeHTTP(rr, req)
+		if rr.Code != 403 {
+			t.Fatalf("%s: status %d, want 403", path, rr.Code)
+		}
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/asset?path=../../etc/hosts.png", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != 400 {
+		t.Fatalf("escape status %d", rr.Code)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/asset?path=sub/docs/missing.png", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != 404 {
+		t.Fatalf("missing status %d", rr.Code)
+	}
+}
+
+func TestAssetContentType(t *testing.T) {
+	cases := map[string]string{
+		"a/b/logo.PNG":   "image/png",
+		"diagram.svg":    "image/svg+xml",
+		"clip.mp4":       "video/mp4",
+		"notes.md":       "",
+		".env":           "",
+		"secrets.json":   "",
+		"Makefile":       "",
+		"archive.tar.gz": "",
+	}
+	for name, want := range cases {
+		if got := assetContentType(name); got != want {
+			t.Errorf("assetContentType(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestAssetSVGIsSandboxed(t *testing.T) {
+	s, root := testServer(t)
+	h := s.routes()
+	svg := `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`
+	if err := os.WriteFile(filepath.Join(root, "d.svg"), []byte(svg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/asset?path=d.svg", nil))
+	if rr.Code != 200 {
+		t.Fatalf("svg status %d", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Security-Policy"); got != "sandbox" {
+		t.Fatalf("CSP %q, want sandbox", got)
 	}
 }
 
