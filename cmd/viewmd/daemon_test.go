@@ -247,6 +247,7 @@ func TestDaemonLifecycle(t *testing.T) {
 	pidPath := filepath.Join(dir, "viewmd.pid")
 	logPath := filepath.Join(dir, "viewmd.log")
 	base := []string{
+		"--server-only",
 		"--folder", root, "--bind", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--pidfile", pidPath, "--logfile", logPath,
@@ -332,6 +333,7 @@ func TestExposeDoesNotBlockServer(t *testing.T) {
 	port := freePort(t)
 	pidPath := filepath.Join(dir, "viewmd.pid")
 	base := []string{
+		"--server-only",
 		"--folder", root, "--bind", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--pidfile", pidPath, "--logfile", filepath.Join(dir, "viewmd.log"),

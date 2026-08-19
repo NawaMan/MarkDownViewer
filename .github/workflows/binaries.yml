@@ -92,7 +92,9 @@ jobs:
           mkdir -p smoke
           printf '# smoke\n\nserved-from-%s\n' "${{ matrix.asset }}" > smoke/index.md
 
-          "$bin" --folder smoke --md index.md --port 8799 --bind 127.0.0.1 --daemon
+          # --server-only: the runners that do have a browser (macOS, Windows)
+          # should not open one for a smoke test.
+          "$bin" --folder smoke --md index.md --port 8799 --bind 127.0.0.1 --server-only --daemon
           "$bin" status --port 8799
           curl -fsS -o /dev/null -w 'GET / -> %{http_code}\n' http://127.0.0.1:8799/
           body="$(curl -fsS 'http://127.0.0.1:8799/api/file?path=index.md')"

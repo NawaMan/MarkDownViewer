@@ -63,6 +63,7 @@ func run(args []string) int {
 	port := flags.Int("port", 8765, "HTTP listen port")
 	bind := flags.String("bind", "0.0.0.0", "listen address")
 	md := flags.String("md", "", "Markdown file (relative to --folder) to open first")
+	serverOnly := flags.Bool("server-only", false, "serve without opening a browser")
 	daemon := flags.Bool("daemon", false, "run in the background and return to the shell")
 	stop := flags.Bool("stop", false, "stop the background instance for this port")
 	status := flags.Bool("status", false, "report whether a background instance is running")
@@ -89,6 +90,7 @@ Flags:
   --md FILE          Open this Markdown file first (relative to --folder)
   --expose [PORT]    After listen, run booth--expose <port> [PORT]
                      Host port defaults to the server port when omitted
+  --server-only      Do not open a browser (the default is to open one)
   --daemon           Serve in the background and return to the shell
   --stop             Alias for the stop command
   --status           Alias for the status command
@@ -99,6 +101,7 @@ Flags:
 
 Examples:
   viewmd --folder . --md README.md
+  viewmd --folder . --md README.md --server-only   # no browser (headless, CI)
   viewmd --folder docs --port 8765 --expose
   viewmd --md README.md --expose 18765
   viewmd --folder ./docs --daemon        # background; --port picks the instance
@@ -207,10 +210,18 @@ Examples:
 			return 1
 		}
 		fmt.Printf("viewmd v%s running in background (pid %d)\n", version, pid)
-		fmt.Printf("  url:      http://%s/\n", net.JoinHostPort(*bind, strconv.Itoa(*port)))
+		fmt.Printf("  url:      %s\n", browsableURL(*bind, *port))
+		if note := bindNote(*bind); note != "" {
+			fmt.Printf("  listen:   %s (%s)\n", net.JoinHostPort(*bind, strconv.Itoa(*port)), note)
+		}
 		fmt.Printf("  pid file: %s\n", pidPath)
 		fmt.Printf("  log file: %s\n", logPath)
 		fmt.Printf("  stop it:  viewmd stop --port %d\n", *port)
+		// spawnDaemon returns only once the child has bound the port, so the
+		// browser cannot beat the listener to the first request.
+		if !*serverOnly {
+			announceBrowser(*bind, *port, "opening:  ") // padded to this banner's keys
+		}
 		return 0
 	}
 
@@ -252,9 +263,19 @@ Examples:
 		defer os.Remove(pidPath)
 	}
 
-	fmt.Fprintf(os.Stderr, "viewmd v%s serving %s on http://%s/\n", version, rootAbs, addr)
+	fmt.Fprintf(os.Stderr, "viewmd v%s serving %s on %s\n", version, rootAbs, browsableURL(*bind, *port))
+	if note := bindNote(*bind); note != "" {
+		fmt.Fprintf(os.Stderr, "  listen:       %s (%s)\n", addr, note)
+	}
 	if initial != "" {
 		fmt.Fprintf(os.Stderr, "  initial file: %s\n", initial)
+	}
+
+	// The port is bound by now, so the browser cannot arrive early. A daemon
+	// child never opens one: it has no terminal and no session of its own, and
+	// the parent that spawned it has already done this.
+	if !*serverOnly && !daemonChild {
+		announceBrowser(*bind, *port, "opening:      ") // padded to this banner's keys
 	}
 
 	// booth--expose may be a long-lived tunnel, so it runs alongside the server
@@ -293,6 +314,21 @@ Examples:
 		<-shutdown
 	}
 	return 0
+}
+
+// announceBrowser opens the viewer and reports — rather than fails — when
+// there is no browser to open. A headless box, a container or an SSH session
+// is a normal place to run viewmd, and the server is useful there regardless.
+// The label carries its own padding: the two banners align their keys to
+// different columns.
+func announceBrowser(bind string, port int, label string) {
+	url := browsableURL(bind, port)
+	if err := openBrowser(url); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not open a browser: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  (Open %s yourself, or pass --server-only to stop trying.)\n", url)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "  %s%s\n", label, url)
 }
 
 // peelExpose extracts --expose / --expose=PORT / --expose PORT from args.

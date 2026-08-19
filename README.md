@@ -14,6 +14,7 @@ Browse a folder of Markdown files in your browser — single Go binary, embedded
 - Resizable sidebar (width remembered), horizontal scroll, **Shift+wheel** for sideways scroll
 - Copy button on every code block (falls back to a selection copy off localhost)
 - Open a default file with `--md`
+- Opens your browser on start — `--server-only` when you would rather it did not
 - **Daemon mode**: `--daemon` / `--status` / `--stop`, with graceful shutdown
 - Optional **CodingBooth** integration: `--expose` calls `booth--expose` when available
 
@@ -52,7 +53,8 @@ chmod +x viewmd-linux-amd64
 .\viewmd-windows-amd64.exe --folder . --md README.md
 ```
 
-Then open : http://127.0.0.1:8765/
+Your browser opens on http://127.0.0.1:8765/ by itself. Add `--server-only` to
+keep it closed — see [Opening a browser](#opening-a-browser).
 
 ### Download the File Directly
 
@@ -104,6 +106,7 @@ Flags:
   --md FILE          Open this Markdown file first (relative to --folder)
   --expose [PORT]    After listen, run booth--expose <port> [PORT]
                      (no-op warning if booth--expose is not on PATH)
+  --server-only      Do not open a browser (the default is to open one)
   --daemon           Serve in the background and return to the shell
   --stop             Alias for the stop command
   --status           Alias for the status command
@@ -118,9 +121,35 @@ Examples:
 ```bash
 viewmd --folder ./docs --md intro.md
 viewmd --md README.md --port 9000
+viewmd --md README.md --server-only                # serve only, no browser
 viewmd --folder . --md README.md --expose          # host port = server port
 viewmd --md README.md --expose 18765               # host 18765 → container port
 ```
+
+## Opening a browser
+
+Starting the server opens your default browser on it, in the foreground and
+under `--daemon` alike. The browser is launched once the port is bound, so it
+cannot arrive before the server is ready, and the launcher is whatever the
+platform provides — no dependency comes along for the ride:
+
+| Platform | Launcher |
+| --- | --- |
+| macOS | `open` |
+| Windows | `rundll32 url.dll,FileProtocolHandler` |
+| Linux, BSD | `$BROWSER`, then `xdg-open`, `gio open`, `wslview`, `sensible-browser`, `x-www-browser`, `www-browser` |
+
+The URL is not the listen address: `--bind` defaults to `0.0.0.0`, which is a
+fine thing to listen on and not a thing a browser can visit — Windows refuses
+it outright. An unspecified bind address becomes `127.0.0.1` (or `[::1]`) in
+the URL, both in the browser and in the banner; any other address is used as
+given. A bind that answers on every interface is still worth knowing about, so
+the banner keeps a `listen:` line for it.
+
+A headless server, a container and an SSH session have no browser to open, and
+that is not an error: viewmd warns, prints the URL, and goes on serving. Pass
+`--server-only` where that warning is just noise — CI, a container, a service
+unit — and nothing is launched at all.
 
 ## Relative images and links
 
@@ -153,10 +182,12 @@ the port is bound, so a failure to start is still reported to your shell:
 ```bash
 viewmd --folder ./docs --md intro.md --daemon
 # viewmd v0.5.0 running in background (pid 12345)
-#   url:      http://0.0.0.0:8765/
+#   url:      http://127.0.0.1:8765/
+#   listen:   0.0.0.0:8765 (all interfaces)
 #   pid file: /tmp/viewmd-8765.pid
 #   log file: /tmp/viewmd-8765.log
 #   stop it:  viewmd stop --port 8765
+#   opening:  http://127.0.0.1:8765/
 
 viewmd status          # exit 0 when running, 1 when not
 viewmd stop            # SIGTERM + graceful drain, then removes the pid file

@@ -87,14 +87,16 @@ which puts viewmd at `http://localhost:33987`.
 
 ```bash
 ./booth exec --run --keep-alive -- bash -lc \
-  'cd /home/coder/code && ./viewmd --folder . --md README.md --port 987 --bind 0.0.0.0 --daemon'
+  'cd /home/coder/code && ./viewmd --folder . --md README.md --port 987 --bind 0.0.0.0 --server-only --daemon'
 curl -s http://localhost:33987/                                       # from the host (33000 + 987)
 ./booth exec -- bash -lc 'tail /tmp/viewmd-987.log'                   # logs
 ./booth exec -- bash -lc 'cd /home/coder/code && ./viewmd stop --port 987'
 ```
 
 `987` is a privileged port, but the container is configured so the unprivileged
-`coder` user can bind it — no `sudo` needed.
+`coder` user can bind it — no `sudo` needed. `--server-only` is what keeps the
+booth from hunting for a browser it does not have; without it viewmd prints a
+warning and serves anyway.
 
 `--expose` (which shells out to `booth--expose`) registers a tunnel but did **not**
 produce a host-side listener under this `terminal` variant — `booth expose list`
