@@ -181,7 +181,7 @@ the port is bound, so a failure to start is still reported to your shell:
 
 ```bash
 viewmd --folder ./docs --md intro.md --daemon
-# viewmd v0.5.0 running in background (pid 12345)
+# viewmd v0.6.0 running in background (pid 12345)
 #   url:      http://127.0.0.1:8765/
 #   listen:   0.0.0.0:8765 (all interfaces)
 #   pid file: /tmp/viewmd-8765.pid
