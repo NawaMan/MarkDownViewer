@@ -7,11 +7,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -36,18 +39,18 @@ func main() {
 }
 
 func run(args []string) int {
-	// A leading bare word is a subcommand; flags may still follow it, as in
-	// `viewmd stop --port 9000`.
-	var command string
+	// A leading bare word is either a reserved subcommand or a folder shorthand
+	// (`viewmd DIR` == `viewmd --folder DIR`); flags may still follow it, as in
+	// `viewmd stop --port 9000` or `viewmd ./docs --port 9000`.
+	var command, positionalFolder string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		command = args[0]
-		args = args[1:]
-		switch command {
+		switch args[0] {
 		case "version", "stop", "status":
+			command = args[0]
 		default:
-			fmt.Fprintf(os.Stderr, "Error: unknown command %q (try: version, stop, status)\n", command)
-			return 2
+			positionalFolder = args[0]
 		}
+		args = args[1:]
 	}
 
 	// version needs no flags and no valid folder.
@@ -76,6 +79,7 @@ func run(args []string) int {
 
 Usage:
   viewmd [flags]
+  viewmd DIR [flags]
   viewmd <command> [flags]
 
 Commands:
@@ -84,7 +88,8 @@ Commands:
   status             Report whether a background instance is running
 
 Flags:
-  --folder DIR       Root directory to scan (default ".")
+  --folder DIR       Root directory to scan (default "."); DIR alone (before
+                     any flags) is shorthand for --folder DIR
   --port N           Listen port (default 8765)
   --bind ADDR        Listen address (default 0.0.0.0)
   --md FILE          Open this Markdown file first (relative to --folder)
@@ -107,6 +112,8 @@ Examples:
   viewmd --folder ./docs --daemon        # background; --port picks the instance
   viewmd status
   viewmd stop --port 9000
+  viewmd ./other-docs                    # if an instance is up on --port,
+                                          # retarget it instead of failing to bind
 `)
 	}
 
@@ -133,6 +140,20 @@ Examples:
 	if flags.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %v\n", flags.Args())
 		return 2
+	}
+
+	if positionalFolder != "" {
+		explicitFolder := false
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "folder" {
+				explicitFolder = true
+			}
+		})
+		if explicitFolder {
+			fmt.Fprintln(os.Stderr, "Error: cannot combine a folder argument with --folder")
+			return 2
+		}
+		*folder = positionalFolder
 	}
 
 	pidPath := *pidFile
@@ -179,6 +200,35 @@ Examples:
 		return 0
 	}
 
+	daemonChild := os.Getenv(daemonEnv) != ""
+
+	// An instance already answers on this port: rather than fail to bind (or,
+	// for --daemon, fail to start a second one), retarget it live over
+	// /api/folder. This is how `viewmd DIR` changes a running server's folder
+	// without a restart. *folder and *md are passed through unresolved — a
+	// relative DIR must be judged against the *running instance's* starting
+	// folder, which may differ from our own working directory, so the server
+	// (not us) resolves and validates them; see resolveWithinStart in
+	// server.go.
+	if !daemonChild {
+		if pid, err := runningPid(pidPath); err == nil && pid > 0 {
+			cfg, err := retargetRunningInstance(*port, *folder, *md)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error: retarget:", err)
+				return 1
+			}
+			fmt.Printf("viewmd: pid %d now serving %s\n", pid, cfg.Folder)
+			if cfg.InitialMd != "" {
+				fmt.Printf("  initial file: %s\n", cfg.InitialMd)
+			}
+			return 0
+		}
+	}
+
+	// No running instance to retarget: this is a fresh start, so *folder and
+	// *md are resolved and validated against our own working directory, and
+	// reported to the terminal (rather than buried in the daemon log) before
+	// anything is spawned.
 	rootAbs, err := filepath.Abs(*folder)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error: folder:", err)
@@ -200,9 +250,6 @@ Examples:
 		return 1
 	}
 
-	// Validation above runs in the foreground so bad arguments are reported to
-	// the terminal rather than buried in the daemon log.
-	daemonChild := os.Getenv(daemonEnv) != ""
 	if *daemon && !daemonChild {
 		pid, err := spawnDaemon(pidPath, logPath)
 		if err != nil {
@@ -232,8 +279,8 @@ Examples:
 	}
 
 	srv := &viewServer{
+		startRoot: rootAbs,
 		root:      rootAbs,
-		folderArg: *folder,
 		initialMd: initial,
 		port:      *port,
 		web:       sub,
@@ -329,6 +376,42 @@ func announceBrowser(bind string, port int, label string) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "  %s%s\n", label, url)
+}
+
+// retargetTimeout bounds how long `viewmd DIR` waits for an already-running
+// instance to answer /api/folder.
+const retargetTimeout = 5 * time.Second
+
+// retargetRunningInstance asks the instance listening on port to switch to
+// folder via POST /api/folder, returning the config it settled on (its
+// resolved absolute folder, in particular — folder itself may be relative).
+// It always dials 127.0.0.1 regardless of --bind: loopback reaches a server
+// bound to 0.0.0.0 (the default) or to 127.0.0.1 itself, which covers the
+// common cases without needing to know the other process's --bind value.
+func retargetRunningInstance(port int, folder, initialMd string) (serverConfig, error) {
+	body, err := json.Marshal(setFolderRequest{Folder: folder, Md: initialMd})
+	if err != nil {
+		return serverConfig{}, err
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/api/folder", port)
+	client := &http.Client{Timeout: retargetTimeout}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return serverConfig{}, fmt.Errorf("could not reach the running instance: %w", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if err != nil {
+		return serverConfig{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return serverConfig{}, fmt.Errorf("server returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	var cfg serverConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return serverConfig{}, fmt.Errorf("could not parse server response: %w", err)
+	}
+	return cfg, nil
 }
 
 // peelExpose extracts --expose / --expose=PORT / --expose PORT from args.

@@ -27,8 +27,8 @@ func testServer(t *testing.T) (*viewServer, string) {
 		t.Fatal(err)
 	}
 	s := &viewServer{
+		startRoot: root,
 		root:      root,
-		folderArg: root,
 		initialMd: "README.md",
 		port:      8765,
 		web:       sub,
@@ -210,5 +210,97 @@ func TestConfig(t *testing.T) {
 	}
 	if cfg.InitialMd != "README.md" || cfg.Port != 8765 {
 		t.Fatalf("%+v", cfg)
+	}
+	if cfg.StartFolder != s.startRoot {
+		t.Fatalf("StartFolder = %q, want %q", cfg.StartFolder, s.startRoot)
+	}
+}
+
+func postFolder(t *testing.T, h http.Handler, folder string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(setFolderRequest{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/folder", bytes.NewReader(body))
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestSetFolderMovesWithinStart(t *testing.T) {
+	s, root := testServer(t)
+	h := s.routes()
+
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "NOTES.md"), []byte("# Notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Absolute, inside startRoot: allowed.
+	rr := postFolder(t, h, sub)
+	if rr.Code != 200 {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	newRoot, _ := s.state()
+	if newRoot != sub {
+		t.Fatalf("root = %q, want %q", newRoot, sub)
+	}
+
+	// Relative, resolved against startRoot (not the current root): "sub"
+	// always means startRoot/sub, matching the mental model that the
+	// starting directory — not wherever the server currently is — is what a
+	// relative folder is anchored to.
+	rr = postFolder(t, h, "sub")
+	if rr.Code != 200 {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	newRoot, _ = s.state()
+	if newRoot != sub {
+		t.Fatalf("root after relative \"sub\" = %q, want %q", newRoot, sub)
+	}
+
+	// Absolute, back to startRoot itself: allowed.
+	rr = postFolder(t, h, root)
+	if rr.Code != 200 {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	newRoot, _ = s.state()
+	if newRoot != root {
+		t.Fatalf("root after returning to startRoot = %q, want %q", newRoot, root)
+	}
+}
+
+func TestSetFolderRejectsOutsideStart(t *testing.T) {
+	s, root := testServer(t)
+	h := s.routes()
+
+	outside := t.TempDir()
+	for _, bad := range []string{outside, "..", "../.."} {
+		rr := postFolder(t, h, bad)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("folder=%q: status %d, want 400 (%s)", bad, rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "starting directory") {
+			t.Fatalf("folder=%q: body %q, want it to mention the starting directory", bad, rr.Body.String())
+		}
+	}
+
+	// A rejected request must not have moved root.
+	newRoot, _ := s.state()
+	if newRoot != root {
+		t.Fatalf("root = %q after rejected retargets, want unchanged %q", newRoot, root)
+	}
+}
+
+func TestSetFolderRejectsFile(t *testing.T) {
+	s, _ := testServer(t)
+	h := s.routes()
+	rr := postFolder(t, h, "README.md")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 for a file, not a directory", rr.Code)
 	}
 }

@@ -130,7 +130,49 @@ body.sidebar-resizing #content { pointer-events: none; }
 #tree button.file.active {
   background: var(--sel); border-left-color: var(--accent); font-weight: 600;
 }
+/* A directory row is a label (expand/collapse) plus a "set as base" icon,
+   laid out as flex siblings rather than one nested inside the other — a
+   <button> cannot legally contain another <button>, and each needs its own
+   independent click target. The row carries the shared left indent and the
+   full-width hit area that used to live on the label alone: min-width:100%
+   here stretches to whatever the *widest* row in the whole tree needs, so
+   label and icon are both flex:0 (sized to their own content, sitting next
+   to each other) rather than flex:1 — a growing label would push the icon
+   to the far edge of that width, off past the visible sidebar for every
+   shorter row. */
+#tree .dir-row {
+  display: flex; align-items: center; gap: .3rem;
+  width: max-content; min-width: 100%;
+  padding: 0 var(--gutter) 0 calc(var(--gutter) + var(--depth, 0) * var(--indent));
+}
+#tree .dir-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 #tree .dir-label {
+  flex: 0 0 auto;
+  display: block;
+  padding: .35rem 0 .15rem 0;
+  font-size: .75rem;
+  color: var(--muted); font-weight: 600;
+  white-space: nowrap;
+  text-align: left; border: 0; background: transparent;
+  font-family: inherit; cursor: pointer;
+}
+#tree .dir-label:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* Always visible, unlike the code-block copy button: this is the only way
+   to move the base folder, not a secondary convenience, so it can't be
+   hidden behind a hover a touch/keyboard user may never trigger. */
+#tree .set-base-btn {
+  flex: 0 0 auto;
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--muted); font-size: .8rem; line-height: 1;
+  padding: .15rem .35rem; border-radius: 4px;
+  transition: color .12s ease, background .12s ease;
+}
+#tree .set-base-btn:hover,
+#tree .set-base-btn:focus { color: var(--fg); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+/* The ".." row moves the base up one level; it has nothing to expand, so —
+   unlike a real directory — it is a single button with no icon sibling and
+   no folder glyph (it is not one). */
+#tree .up-row {
   display: block;
   width: max-content;
   min-width: 100%;
@@ -142,8 +184,8 @@ body.sidebar-resizing #content { pointer-events: none; }
   text-align: left; border: 0; background: transparent;
   font-family: inherit; cursor: pointer;
 }
-#tree .dir-label:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-#tree .dir-label:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#tree .up-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+#tree .up-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #main { flex: 1; overflow: auto; padding: 1.25rem 1.5rem 4rem; }
 #main .empty { color: var(--muted); max-width: 36rem; }
 #content { max-width: 52rem; }
@@ -572,16 +614,39 @@ img { max-width: 100%; }
       var child = dirs[dirName];
       var pathPrefix = prefix ? prefix + "/" + dirName : dirName;
       var li = document.createElement("li");
+
+      // The label (expand/collapse) and the "set as base" icon are flex
+      // siblings in their own row rather than one nested in the other — a
+      // <button> cannot contain another <button>, and each needs its own
+      // click target that does not also trigger the other's action.
+      var row = document.createElement("div");
+      row.className = "dir-row";
+      row.style.setProperty("--depth", depth);
+
       var label = document.createElement("button");
       label.type = "button";
       label.className = "dir-label";
-      label.style.setProperty("--depth", depth);
       // The indent shows where this folder sits, so the label only needs its
       // own name. The full path stays in the tooltip.
       label.setAttribute("title", pathPrefix + "/");
       label.setAttribute("data-dir", pathPrefix);
       label.textContent = dirName + "/";
-      li.appendChild(label);
+
+      var setBaseBtn = document.createElement("button");
+      setBaseBtn.type = "button";
+      setBaseBtn.className = "set-base-btn";
+      setBaseBtn.textContent = "←";
+      setBaseBtn.setAttribute("title", "Set as base folder");
+      setBaseBtn.setAttribute("aria-label", "Set " + dirName + " as the base folder");
+      setBaseBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        setBase(absJoin(currentFolder, pathPrefix));
+      });
+
+      row.appendChild(label);
+      row.appendChild(setBaseBtn);
+      li.appendChild(row);
+
       var sub = document.createElement("ul");
       appendFiles(sub, child.files || [], child.dirs || {}, pathPrefix, depth + 1);
       li.appendChild(sub);
@@ -598,6 +663,22 @@ img { max-width: 100%; }
     });
   }
 
+  // Prepends a ".." row so the base folder can move up toward startFolder.
+  // It has nothing to expand, so — unlike a real directory — it is a single
+  // button: the whole row is the click target, with no separate icon.
+  function prependUpRow(parentUl) {
+    var li = document.createElement("li");
+    var up = document.createElement("button");
+    up.type = "button";
+    up.className = "up-row";
+    up.setAttribute("title", "Go up to " + parentOfFolder(currentFolder));
+    up.setAttribute("aria-label", "Go up one folder");
+    up.textContent = "← ..";
+    up.addEventListener("click", function () { setBase(parentOfFolder(currentFolder)); });
+    li.appendChild(up);
+    parentUl.insertBefore(li, parentUl.firstChild);
+  }
+
   function setOpen(label, sub, open) {
     label.setAttribute("aria-expanded", open ? "true" : "false");
     sub.hidden = !open;
@@ -610,10 +691,12 @@ img { max-width: 100%; }
     var node = el.parentNode;
     while (node && node !== treeEl) {
       if (node.tagName === "LI") {
-        var label = node.firstChild;
-        var sub = label && label.nextSibling;
-        if (label && label.className === "dir-label" &&
-            label.getAttribute("aria-expanded") === "false") {
+        // <li> holds the dir-row (label + set-base icon) followed by the
+        // nested <ul>, not the label directly — see appendFiles above.
+        var row = node.firstChild;
+        var label = row && row.className === "dir-row" ? row.querySelector(".dir-label") : null;
+        var sub = row && row.nextSibling;
+        if (label && sub && label.getAttribute("aria-expanded") === "false") {
           setOpen(label, sub, true);
           delete collapsedDirs[label.getAttribute("data-dir")];
           changed = true;
@@ -629,6 +712,9 @@ img { max-width: 100%; }
     treeEl.innerHTML = "";
     if (nodes && nodes.files) {
       appendFiles(treeEl, nodes.files || [], nodes.dirs || {}, "");
+      if (currentFolder && startFolder && currentFolder !== startFolder) {
+        prependUpRow(treeEl);
+      }
       return;
     }
     // flat fallback
@@ -760,30 +846,78 @@ img { max-width: 100%; }
     }, { passive: false });
   }
 
-  function boot() {
-    if (typeof marked === "undefined") {
-      showError("Markdown library failed to load.");
-      return;
-    }
-    Promise.all([
-      fetch("/api/config").then(function (r) { return r.json(); }),
-      fetch("/api/tree").then(function (r) {
-        if (!r.ok) throw new Error("tree " + r.status);
-        return r.json();
-      })
-    ]).then(function (pair) {
-      var cfg = pair[0];
-      var tree = pair[1];
-      meta.textContent = "Folder: " + (cfg.folder || ".");
+  // ── change base folder ─────────────────────────────────
+  // currentFolder and startFolder are always absolute, forward-slash paths
+  // (server.go normalizes them), so they can be joined and split with plain
+  // string ops below without going through the server's own path rules.
+  // The server still re-validates every request against startFolder — see
+  // resolveWithinStart in server.go — so a wrong guess here just surfaces as
+  // an error rather than actually moving anywhere it shouldn't.
+  var currentFolder = ".";
+  var startFolder = ".";
+
+  // Absolute-path join for a directory name/relative path pulled straight out
+  // of the tree API: those never contain "." or ".." segments, so unlike the
+  // relative-link resolver above this needs no collapsing logic.
+  function absJoin(base, rel) {
+    return base.replace(/\/+$/, "") + "/" + rel;
+  }
+
+  function parentOfFolder(p) {
+    var trimmed = p.replace(/\/+$/, "");
+    var i = trimmed.lastIndexOf("/");
+    if (i < 0) return trimmed;
+    return i === 0 ? "/" : trimmed.slice(0, i);
+  }
+
+  // Clears the current file so a stale path from the old tree is not left
+  // showing (or in the address bar) once the root underneath it has changed.
+  function resetView() {
+    content.hidden = true;
+    content.innerHTML = "";
+    placeholder.hidden = false;
+    placeholder.textContent = "Select a Markdown file from the list.";
+    activePath = null;
+    try {
+      var u = new URL(location.href);
+      u.searchParams.delete("md");
+      history.replaceState(null, "", u.pathname + u.search);
+    } catch (e) { /* ignore */ }
+  }
+
+  // Retargets the server at absPath (an absolute filesystem path) and
+  // reloads the sidebar from there. Used by every "set as base" click.
+  function setBase(absPath) {
+    showError("");
+    fetch("/api/folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder: absPath })
+    }).then(function (r) {
+      return r.text().then(function (t) {
+        if (!r.ok) throw new Error(t || r.statusText);
+        return JSON.parse(t);
+      });
+    }).then(function (cfg) {
+      resetView();
+      return loadTreeAndOpen(cfg, cfg.initialMd || null);
+    }).catch(function (e) {
+      showError("Could not change folder: " + (e && e.message ? e.message : e));
+    });
+  }
+
+  // Fetches the tree for the folder named in cfg, renders the sidebar, and
+  // opens `want` (or the lone file, if there is exactly one). Shared by boot
+  // and by a successful folder change, which both end at the same place.
+  function loadTreeAndOpen(cfg, want) {
+    currentFolder = cfg.folder || ".";
+    if (cfg.startFolder) startFolder = cfg.startFolder;
+    meta.textContent = "Folder: " + currentFolder;
+    return fetch("/api/tree").then(function (r) {
+      if (!r.ok) throw new Error("tree " + r.status);
+      return r.json();
+    }).then(function (tree) {
       buildTree(tree);
-
-      var want = null;
-      try {
-        var q = new URL(location.href).searchParams.get("md");
-        if (q) want = q;
-      } catch (e) { /* ignore */ }
-      if (!want && cfg.initialMd) want = cfg.initialMd;
-
       var paths = [];
       collectPaths(tree, "", paths);
       if (want) {
@@ -798,6 +932,22 @@ img { max-width: 100%; }
       if (paths.length === 0) {
         placeholder.textContent = "No Markdown files found under this folder.";
       }
+    });
+  }
+
+  function boot() {
+    if (typeof marked === "undefined") {
+      showError("Markdown library failed to load.");
+      return;
+    }
+    fetch("/api/config").then(function (r) { return r.json(); }).then(function (cfg) {
+      var want = null;
+      try {
+        var q = new URL(location.href).searchParams.get("md");
+        if (q) want = q;
+      } catch (e) { /* ignore */ }
+      if (!want && cfg.initialMd) want = cfg.initialMd;
+      return loadTreeAndOpen(cfg, want);
     }).catch(function (e) {
       showError("Failed to start viewer: " + (e && e.message ? e.message : e));
     });

@@ -68,9 +68,19 @@ func TestVersionNotACommandWhenNotFirst(t *testing.T) {
 	}
 }
 
-func TestUnknownCommandRejected(t *testing.T) {
-	if code := run([]string{"serve"}); code != 2 {
-		t.Fatalf("exit = %d, want 2 for an unknown command", code)
+// A bareword that isn't a reserved subcommand (version/stop/status) is
+// treated as a folder argument (`viewmd DIR`), so a typo like "srve" fails
+// as a bad folder rather than as an unknown command.
+func TestUnrecognizedBarewordTreatedAsFolder(t *testing.T) {
+	if code := run([]string{"does-not-exist-xyz"}); code != 1 {
+		t.Fatalf("exit = %d, want 1 for a nonexistent folder", code)
+	}
+}
+
+// A folder argument and an explicit --folder flag conflict.
+func TestPositionalFolderConflictsWithFlag(t *testing.T) {
+	if code := run([]string{".", "--folder", "."}); code != 2 {
+		t.Fatalf("exit = %d, want 2 when both a folder argument and --folder are given", code)
 	}
 }
 

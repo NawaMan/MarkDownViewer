@@ -15,6 +15,9 @@ Browse a folder of Markdown files in your browser — single Go binary, embedded
 - Copy button on every code block (falls back to a selection copy off localhost)
 - Open a default file with `--md`
 - Opens your browser on start — `--server-only` when you would rather it did not
+- **Change the base folder without restarting**: `viewmd DIR` retargets a
+  running instance, and the sidebar has matching "set as base" icons —
+  navigation always stays inside the directory viewmd was started with
 - **Daemon mode**: `--daemon` / `--status` / `--stop`, with graceful shutdown
 - Optional **CodingBooth** integration: `--expose` calls `booth--expose` when available
 
@@ -92,6 +95,7 @@ go install github.com/NawaMan/MarkDownViewer/cmd/viewmd@latest
 
 ```text
 viewmd [flags]
+viewmd DIR [flags]
 viewmd <command> [flags]
 
 Commands:
@@ -100,7 +104,8 @@ Commands:
   status             Report whether a background instance is running
 
 Flags:
-  --folder DIR       Root directory to scan (default ".")
+  --folder DIR       Root directory to scan (default "."); DIR alone (before
+                     any flags) is shorthand for --folder DIR
   --port N           Listen port (default 8765)
   --bind ADDR        Listen address (default 0.0.0.0)
   --md FILE          Open this Markdown file first (relative to --folder)
@@ -150,6 +155,64 @@ A headless server, a container and an SSH session have no browser to open, and
 that is not an error: viewmd warns, prints the URL, and goes on serving. Pass
 `--server-only` where that warning is just noise — CI, a container, a service
 unit — and nothing is launched at all.
+
+## Changing the base folder while it's running
+
+viewmd has two folder concepts: the **starting folder** — whatever `--folder`
+(or `viewmd DIR`) named at launch — and the **base folder**, whichever
+directory the sidebar is currently rooted at. The base folder can move
+around live; the starting folder never changes for the life of the process,
+and every move is required to stay inside it.
+
+In the sidebar, every folder gets a small "←" icon next to it: click it to
+make that folder the new base. A `..` row appears at the top of the tree
+whenever the base isn't already the starting folder, so you can walk back up
+before descending into a different branch:
+
+```text
+Sidebar, base = /home/nawa (the starting folder):
+  ..                          (not shown — already at the starting folder)
+  docs/            [<-]
+  manual/          [<-]
+
+Click docs/'s icon -> base = /home/nawa/docs:
+  ..               [<-]       (click = back to /home/nawa)
+  api/             [<-]
+  intro.md
+```
+
+`viewmd DIR` is the same idea from the command line: shorthand for
+`viewmd --folder DIR`, but if an instance is already serving `--port` (found
+via its pid file, the same one `--stop`/`--status` use), it retargets that
+instance's base folder live instead of failing to bind a second time:
+
+```bash
+viewmd /home/nawa --daemon --port 8765   # start; /home/nawa is now the starting folder
+viewmd docs --port 8765                  # same instance, base folder -> /home/nawa/docs
+viewmd manual --port 8765                # base folder -> /home/nawa/manual (relative to the *starting* folder, not to docs)
+viewmd / --port 8765                     # refused: outside the starting folder
+```
+
+A relative argument here is always resolved against the **starting** folder,
+not wherever the base currently is — `manual` above means
+`/home/nawa/manual` even though the base had moved to `docs`. An absolute
+path is taken as given but still has to land inside the starting folder.
+Either way, anything that resolves outside it is rejected with a 400 and the
+instance keeps serving whatever it was serving before. (The sidebar icons
+never rely on this: they always send the absolute path of whichever folder
+was clicked.)
+
+This works for both `--daemon` and plain foreground instances that were given
+an explicit `--pidfile` (or started with `--daemon`); it dials `127.0.0.1` on
+`--port` regardless of `--bind`, so it also needs matching `--port`/`--pidfile`
+values, the same requirement `--stop` and `--status` already have.
+
+`/api/folder` has no more (and no less) trust than every other endpoint here:
+with no authentication, anyone who can reach the server can already read the
+whole current tree under the starting folder, and retargeting only changes
+which part of that tree is current — never which file types leave the process
+(still just the [asset allowlist](#relative-images-and-links) below), and
+never anything outside the folder viewmd was started with in the first place.
 
 ## Relative images and links
 

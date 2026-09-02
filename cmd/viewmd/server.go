@@ -6,25 +6,58 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type serverConfig struct {
-	Folder    string `json:"folder"`
-	InitialMd string `json:"initialMd,omitempty"`
-	Port      int    `json:"port"`
+	Folder      string `json:"folder"`
+	InitialMd   string `json:"initialMd,omitempty"`
+	Port        int    `json:"port"`
+	StartFolder string `json:"startFolder"`
+}
+
+// setFolderRequest is the body of POST /api/folder: it retargets a running
+// server at a different directory without restarting it.
+type setFolderRequest struct {
+	Folder string `json:"folder"`
+	Md     string `json:"md,omitempty"`
 }
 
 type viewServer struct {
+	port int
+	web  fs.FS
+
+	// startRoot is the directory viewmd was launched with. It never changes,
+	// and it bounds every later retarget: /api/folder may move root anywhere
+	// under startRoot, never above or beside it.
+	startRoot string
+
+	// root and initialMd change when /api/folder retargets the server, so
+	// every read and write goes through mu.
+	mu        sync.RWMutex
 	root      string // absolute folder root
-	folderArg string // as user passed it (for display)
 	initialMd string // relative path or empty
-	port      int
-	web       fs.FS
+}
+
+// state returns a consistent snapshot of the mutable fields above.
+func (s *viewServer) state() (root, initialMd string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.root, s.initialMd
+}
+
+// setFolder retargets the server at a new root. rootAbs must already be a
+// validated, absolute directory.
+func (s *viewServer) setFolder(rootAbs, initialMd string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.root, s.initialMd = rootAbs, initialMd
 }
 
 func (s *viewServer) routes() http.Handler {
@@ -33,6 +66,7 @@ func (s *viewServer) routes() http.Handler {
 	mux.HandleFunc("/api/tree", s.handleTree)
 	mux.HandleFunc("/api/file", s.handleFile)
 	mux.HandleFunc("/api/asset", s.handleAsset)
+	mux.HandleFunc("/api/folder", s.handleSetFolder)
 	mux.Handle("/vendor/", http.FileServer(http.FS(s.web)))
 	mux.HandleFunc("/", s.handleIndex)
 	return mux
@@ -57,10 +91,12 @@ func (s *viewServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	root, initialMd := s.state()
 	writeJSON(w, serverConfig{
-		Folder:    s.folderArg,
-		InitialMd: s.initialMd,
-		Port:      s.port,
+		Folder:      filepath.ToSlash(root),
+		InitialMd:   initialMd,
+		Port:        s.port,
+		StartFolder: filepath.ToSlash(s.startRoot),
 	})
 }
 
@@ -69,7 +105,8 @@ func (s *viewServer) handleTree(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	tree, err := buildTree(s.root)
+	root, _ := s.state()
+	tree, err := buildTree(root)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -82,8 +119,9 @@ func (s *viewServer) handleFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	root, _ := s.state()
 	rel := r.URL.Query().Get("path")
-	abs, _, err := resolveUnderRoot(s.root, rel)
+	abs, _, err := resolveUnderRoot(root, rel)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -114,8 +152,9 @@ func (s *viewServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	root, _ := s.state()
 	rel := r.URL.Query().Get("path")
-	abs, _, err := resolveUnderRoot(s.root, rel)
+	abs, _, err := resolveUnderRoot(root, rel)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -155,6 +194,88 @@ func (s *viewServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 	// ServeContent rather than io.Copy: it answers Range requests, which is
 	// what lets a browser seek in an embedded video.
 	http.ServeContent(w, r, filepath.Base(abs), st.ModTime(), f)
+}
+
+// handleSetFolder retargets the running server at a different directory
+// without a restart: `viewmd DIR` sends this when an instance is already
+// serving the requested port, and the web UI's "Change folder" control uses
+// it too. The new folder must resolve inside startRoot — the directory viewmd
+// was launched with — so this cannot be used to climb out to the rest of the
+// filesystem; it carries the same trust boundary as every other endpoint
+// here otherwise, since there is no auth: anyone who can reach this server
+// can already read its whole current tree under startRoot, and retargeting
+// only changes which part of that subtree is current (see assetTypes in
+// asset.go for the separate limit on which file types ever leave the
+// process).
+func (s *viewServer) handleSetFolder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req setFolderRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	rootAbs, err := s.resolveWithinStart(req.Folder)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	st, err := os.Stat(rootAbs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !st.IsDir() {
+		http.Error(w, "folder is not a directory", http.StatusBadRequest)
+		return
+	}
+	// The old initialMd almost certainly does not exist in the new tree, so it
+	// is only kept when the request names a file that does exist under the
+	// new root.
+	initial, err := normalizeInitialMd(rootAbs, req.Md)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.setFolder(rootAbs, initial)
+	writeJSON(w, serverConfig{
+		Folder:      filepath.ToSlash(rootAbs),
+		InitialMd:   initial,
+		Port:        s.port,
+		StartFolder: filepath.ToSlash(s.startRoot),
+	})
+}
+
+// resolveWithinStart resolves folder to an absolute, cleaned path and rejects
+// it unless that path is startRoot itself or a descendant of it — no "..",
+// no absolute path, no symlink-free traversal trick gets a request outside
+// the directory viewmd started with. A relative folder is resolved against
+// startRoot itself — the directory viewmd was launched with, not wherever
+// the server currently happens to be rooted — matching the mental model that
+// the starting directory is what every "change dir" relies on. The web UI
+// never sends a relative folder; it always computes the absolute path of
+// whichever tree entry was clicked and sends that instead. An absolute (or
+// Windows drive-relative) folder is taken as given and must still land
+// inside startRoot.
+func (s *viewServer) resolveWithinStart(folder string) (string, error) {
+	folder = strings.TrimSpace(folder)
+	if folder == "" {
+		return "", fmt.Errorf("folder is required")
+	}
+	driveRelative := len(folder) > 1 && folder[1] == ':'
+	var candidate string
+	if filepath.IsAbs(folder) || driveRelative {
+		candidate = filepath.Clean(folder)
+	} else {
+		candidate = filepath.Clean(filepath.Join(s.startRoot, folder))
+	}
+	sep := string(filepath.Separator)
+	if candidate != s.startRoot && !strings.HasPrefix(candidate, s.startRoot+sep) {
+		return "", fmt.Errorf("folder must be within the starting directory %s", s.startRoot)
+	}
+	return candidate, nil
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

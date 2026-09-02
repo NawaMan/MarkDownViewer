@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -278,9 +279,77 @@ func TestDaemonLifecycle(t *testing.T) {
 		t.Fatalf("--status failed: %v\n%s", err, out)
 	}
 
-	// A second --daemon on the same pid file must refuse rather than double-start.
-	if out, err := exec.Command(bin, append([]string{"--daemon"}, base...)...).CombinedOutput(); err == nil {
-		t.Fatalf("second --daemon should have failed, got:\n%s", out)
+	// A second --daemon on the same pid file retargets the live instance
+	// (same folder here) rather than double-starting.
+	if out, err := exec.Command(bin, append([]string{"--daemon"}, base...)...).CombinedOutput(); err != nil {
+		t.Fatalf("second --daemon (retarget) failed: %v\n%s", err, out)
+	} else if !strings.Contains(string(out), fmt.Sprintf("pid %d now serving", pid)) {
+		t.Fatalf("second --daemon output = %q, want it to mention retargeting pid %d", out, pid)
+	}
+
+	// The still-live instance keeps answering after the retarget.
+	resp2, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/config", port))
+	if err != nil {
+		t.Fatalf("daemon not serving after retarget: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("status after retarget = %d, want 200", resp2.StatusCode)
+	}
+
+	// `viewmd DIR --pidfile ... --port ...` (no --daemon) retargets the live
+	// instance at a subdirectory of the original --folder rather than failing
+	// to bind.
+	subRoot := filepath.Join(root, "sub")
+	if err := os.MkdirAll(subRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subRoot, "OTHER.md"), []byte("# Other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	retargetArgs := []string{subRoot, "--bind", "127.0.0.1", "--port", strconv.Itoa(port),
+		"--pidfile", pidPath, "--logfile", logPath}
+	if out, err := exec.Command(bin, retargetArgs...).CombinedOutput(); err != nil {
+		t.Fatalf("`viewmd DIR` retarget failed: %v\n%s", err, out)
+	} else if !strings.Contains(string(out), fmt.Sprintf("pid %d now serving %s", pid, subRoot)) {
+		t.Fatalf("retarget output = %q, want it to mention pid %d serving %s", out, pid, subRoot)
+	}
+
+	cfgResp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/config", port))
+	if err != nil {
+		t.Fatalf("daemon not serving after DIR retarget: %v", err)
+	}
+	cfgBody, _ := io.ReadAll(cfgResp.Body)
+	cfgResp.Body.Close()
+	if !strings.Contains(string(cfgBody), subRoot) {
+		t.Fatalf("config after retarget = %s, want it to mention %s", cfgBody, subRoot)
+	}
+
+	// A folder outside the original --folder is refused, whether it climbs
+	// out with ".." or names an unrelated absolute path.
+	outsideRoot := t.TempDir()
+	for _, bad := range []string{outsideRoot, ".."} {
+		badArgs := []string{bad, "--bind", "127.0.0.1", "--port", strconv.Itoa(port),
+			"--pidfile", pidPath, "--logfile", logPath}
+		out, err := exec.Command(bin, badArgs...).CombinedOutput()
+		if err == nil {
+			t.Fatalf("retarget to %q should have failed, got:\n%s", bad, out)
+		}
+		if !strings.Contains(string(out), "starting directory") {
+			t.Fatalf("retarget to %q error = %q, want it to mention the starting directory", bad, out)
+		}
+	}
+
+	// The instance must still be serving subRoot: a rejected retarget leaves
+	// the live folder untouched.
+	cfgResp2, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/config", port))
+	if err != nil {
+		t.Fatalf("daemon not serving after rejected retargets: %v", err)
+	}
+	cfgBody2, _ := io.ReadAll(cfgResp2.Body)
+	cfgResp2.Body.Close()
+	if !strings.Contains(string(cfgBody2), subRoot) {
+		t.Fatalf("config after rejected retargets = %s, want it to still mention %s", cfgBody2, subRoot)
 	}
 
 	if out, err := exec.Command(bin, append([]string{"--stop"}, base...)...).CombinedOutput(); err != nil {
@@ -291,6 +360,95 @@ func TestDaemonLifecycle(t *testing.T) {
 	}
 	if err := exec.Command(bin, append([]string{"--status"}, base...)...).Run(); err == nil {
 		t.Fatal("--status should exit non-zero when not running")
+	}
+}
+
+// A relative `viewmd DIR` retarget is resolved against the running
+// instance's starting folder, never against the CLI process's own working
+// directory — which may not even be related to the server at all. This is
+// exercised by launching the retarget command from a directory that has
+// nothing to do with either the starting folder or its subdirectories.
+func TestRelativeRetargetResolvesAgainstStartingFolder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and spawns a process")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "viewmd")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	root := t.TempDir()
+	docs := filepath.Join(root, "docs")
+	manual := filepath.Join(root, "manual")
+	for _, d := range []string{docs, manual} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unrelatedCwd := t.TempDir() // shares no path segment with root, docs or manual
+
+	port := freePort(t)
+	pidPath := filepath.Join(dir, "viewmd.pid")
+	logPath := filepath.Join(dir, "viewmd.log")
+	base := []string{
+		"--bind", "127.0.0.1", "--port", strconv.Itoa(port),
+		"--pidfile", pidPath, "--logfile", logPath,
+	}
+
+	startArgs := append([]string{root, "--daemon"}, base...)
+	if out, err := exec.Command(bin, startArgs...).CombinedOutput(); err != nil {
+		logs, _ := os.ReadFile(logPath)
+		t.Fatalf("start failed: %v\n%s\nlog:\n%s", err, out, logs)
+	}
+	t.Cleanup(func() { _ = exec.Command(bin, append([]string{"--stop"}, base...)...).Run() })
+
+	// `viewmd docs`, run from a directory unrelated to root, must still land
+	// on root/docs — not <unrelatedCwd>/docs, which does not even exist.
+	cmd := exec.Command(bin, append([]string{"docs"}, base...)...)
+	cmd.Dir = unrelatedCwd
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("relative retarget to docs failed: %v\n%s", err, out)
+	} else if !strings.Contains(string(out), docs) {
+		t.Fatalf("retarget output = %q, want it to mention %s", out, docs)
+	}
+
+	cfg, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/config", port))
+	if err != nil {
+		t.Fatalf("daemon not serving: %v", err)
+	}
+	cfgBody, _ := io.ReadAll(cfg.Body)
+	cfg.Body.Close()
+	if !strings.Contains(string(cfgBody), docs) {
+		t.Fatalf("config = %s, want it to mention %s", cfgBody, docs)
+	}
+
+	// Now retarget to `manual` while the base is docs: relative resolution
+	// must anchor at the *starting* folder (root), not the current base
+	// (docs) — root/manual, never root/docs/manual.
+	cmd = exec.Command(bin, append([]string{"manual"}, base...)...)
+	cmd.Dir = unrelatedCwd
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("relative retarget to manual failed: %v\n%s", err, out)
+	} else if !strings.Contains(string(out), manual) {
+		t.Fatalf("retarget output = %q, want it to mention %s", out, manual)
+	}
+
+	cfg2, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/config", port))
+	if err != nil {
+		t.Fatalf("daemon not serving: %v", err)
+	}
+	cfgBody2, _ := io.ReadAll(cfg2.Body)
+	cfg2.Body.Close()
+	if !strings.Contains(string(cfgBody2), manual) || strings.Contains(string(cfgBody2), filepath.Join(docs, "manual")) {
+		t.Fatalf("config = %s, want it to mention %s and not a manual nested under docs", cfgBody2, manual)
 	}
 }
 
