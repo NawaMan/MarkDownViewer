@@ -59,9 +59,16 @@ owned by your host user, so build artifacts are not root-owned.
 
 ## Build and test
 
+`./build.sh` detects whether it's running outside the booth and, if so, re-execs
+itself inside one automatically (`./booth exec --run -- ./build.sh ...`), so
+`./build.sh` and `./build.sh --all` work directly from the host. It exits with
+an explanatory error if `./booth` is missing or Docker isn't available. `go
+test`, `gofmt`, and `go vet` have no such wrapper and still need to be run
+inside the booth explicitly:
+
 ```bash
-./booth exec --run -- bash -lc 'cd /home/coder/code && ./build.sh'        # ./viewmd for this machine
-./booth exec --run -- bash -lc 'cd /home/coder/code && ./build.sh --all'  # also bin/viewmd-<os>-<arch>, all six targets
+./build.sh                                                                # ./viewmd for this machine
+./build.sh --all                                                          # also bin/viewmd-<os>-<arch>, all six targets
 ./booth exec --run -- bash -lc 'cd /home/coder/code && go test ./...'     # full suite
 ./booth exec --run -- bash -lc 'cd /home/coder/code && gofmt -l cmd'      # must print nothing
 ./booth exec --run -- bash -lc 'cd /home/coder/code && go vet ./...'
