@@ -309,10 +309,14 @@ func TestDaemonLifecycle(t *testing.T) {
 	}
 	retargetArgs := []string{subRoot, "--bind", "127.0.0.1", "--port", strconv.Itoa(port),
 		"--pidfile", pidPath, "--logfile", logPath}
+	// The server reports its folder as a forward-slash path regardless of
+	// OS (see the comment on serverConfig in server.go), so comparisons
+	// against a native-separator path must go through ToSlash on Windows.
+	subRootSlash := filepath.ToSlash(subRoot)
 	if out, err := exec.Command(bin, retargetArgs...).CombinedOutput(); err != nil {
 		t.Fatalf("`viewmd DIR` retarget failed: %v\n%s", err, out)
-	} else if !strings.Contains(string(out), fmt.Sprintf("pid %d now serving %s", pid, subRoot)) {
-		t.Fatalf("retarget output = %q, want it to mention pid %d serving %s", out, pid, subRoot)
+	} else if !strings.Contains(string(out), fmt.Sprintf("pid %d now serving %s", pid, subRootSlash)) {
+		t.Fatalf("retarget output = %q, want it to mention pid %d serving %s", out, pid, subRootSlash)
 	}
 
 	cfgResp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/config", port))
@@ -321,8 +325,8 @@ func TestDaemonLifecycle(t *testing.T) {
 	}
 	cfgBody, _ := io.ReadAll(cfgResp.Body)
 	cfgResp.Body.Close()
-	if !strings.Contains(string(cfgBody), subRoot) {
-		t.Fatalf("config after retarget = %s, want it to mention %s", cfgBody, subRoot)
+	if !strings.Contains(string(cfgBody), subRootSlash) {
+		t.Fatalf("config after retarget = %s, want it to mention %s", cfgBody, subRootSlash)
 	}
 
 	// A folder outside the original --folder is refused, whether it climbs
@@ -348,8 +352,8 @@ func TestDaemonLifecycle(t *testing.T) {
 	}
 	cfgBody2, _ := io.ReadAll(cfgResp2.Body)
 	cfgResp2.Body.Close()
-	if !strings.Contains(string(cfgBody2), subRoot) {
-		t.Fatalf("config after rejected retargets = %s, want it to still mention %s", cfgBody2, subRoot)
+	if !strings.Contains(string(cfgBody2), subRootSlash) {
+		t.Fatalf("config after rejected retargets = %s, want it to still mention %s", cfgBody2, subRootSlash)
 	}
 
 	if out, err := exec.Command(bin, append([]string{"--stop"}, base...)...).CombinedOutput(); err != nil {
@@ -410,14 +414,20 @@ func TestRelativeRetargetResolvesAgainstStartingFolder(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = exec.Command(bin, append([]string{"--stop"}, base...)...).Run() })
 
+	// The server reports its folder as a forward-slash path regardless of
+	// OS (see the comment on serverConfig in server.go), so comparisons
+	// against a native-separator path must go through ToSlash on Windows.
+	docsSlash := filepath.ToSlash(docs)
+	manualSlash := filepath.ToSlash(manual)
+
 	// `viewmd docs`, run from a directory unrelated to root, must still land
 	// on root/docs — not <unrelatedCwd>/docs, which does not even exist.
 	cmd := exec.Command(bin, append([]string{"docs"}, base...)...)
 	cmd.Dir = unrelatedCwd
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("relative retarget to docs failed: %v\n%s", err, out)
-	} else if !strings.Contains(string(out), docs) {
-		t.Fatalf("retarget output = %q, want it to mention %s", out, docs)
+	} else if !strings.Contains(string(out), docsSlash) {
+		t.Fatalf("retarget output = %q, want it to mention %s", out, docsSlash)
 	}
 
 	cfg, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/config", port))
@@ -426,8 +436,8 @@ func TestRelativeRetargetResolvesAgainstStartingFolder(t *testing.T) {
 	}
 	cfgBody, _ := io.ReadAll(cfg.Body)
 	cfg.Body.Close()
-	if !strings.Contains(string(cfgBody), docs) {
-		t.Fatalf("config = %s, want it to mention %s", cfgBody, docs)
+	if !strings.Contains(string(cfgBody), docsSlash) {
+		t.Fatalf("config = %s, want it to mention %s", cfgBody, docsSlash)
 	}
 
 	// Now retarget to `manual` while the base is docs: relative resolution
@@ -437,8 +447,8 @@ func TestRelativeRetargetResolvesAgainstStartingFolder(t *testing.T) {
 	cmd.Dir = unrelatedCwd
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("relative retarget to manual failed: %v\n%s", err, out)
-	} else if !strings.Contains(string(out), manual) {
-		t.Fatalf("retarget output = %q, want it to mention %s", out, manual)
+	} else if !strings.Contains(string(out), manualSlash) {
+		t.Fatalf("retarget output = %q, want it to mention %s", out, manualSlash)
 	}
 
 	cfg2, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/config", port))
@@ -447,8 +457,8 @@ func TestRelativeRetargetResolvesAgainstStartingFolder(t *testing.T) {
 	}
 	cfgBody2, _ := io.ReadAll(cfg2.Body)
 	cfg2.Body.Close()
-	if !strings.Contains(string(cfgBody2), manual) || strings.Contains(string(cfgBody2), filepath.Join(docs, "manual")) {
-		t.Fatalf("config = %s, want it to mention %s and not a manual nested under docs", cfgBody2, manual)
+	if !strings.Contains(string(cfgBody2), manualSlash) || strings.Contains(string(cfgBody2), filepath.ToSlash(filepath.Join(docs, "manual"))) {
+		t.Fatalf("config = %s, want it to mention %s and not a manual nested under docs", cfgBody2, manualSlash)
 	}
 }
 
@@ -511,7 +521,20 @@ func TestExposeDoesNotBlockServer(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	gotArgs, err := os.ReadFile(argsPath)
+	// The server being reachable only proves booth--expose did not block it —
+	// booth--expose itself is a separate process, started concurrently, and
+	// may not have run far enough into the stub script to have written
+	// argsPath yet (seen flaking on slower macOS runners), so give it a
+	// short window rather than reading once.
+	var gotArgs []byte
+	deadlineArgs := time.Now().Add(5 * time.Second)
+	for {
+		gotArgs, err = os.ReadFile(argsPath)
+		if err == nil || time.Now().After(deadlineArgs) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("booth--expose was not invoked: %v", err)
 	}

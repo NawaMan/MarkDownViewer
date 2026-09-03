@@ -212,8 +212,10 @@ func TestConfig(t *testing.T) {
 	if cfg.InitialMd != "README.md" || cfg.Port != 8765 {
 		t.Fatalf("%+v", cfg)
 	}
-	if cfg.StartFolder != s.startRoot {
-		t.Fatalf("StartFolder = %q, want %q", cfg.StartFolder, s.startRoot)
+	// The server always reports a forward-slash path, even on Windows where
+	// s.startRoot itself uses "\" — see the comment on serverConfig.
+	if want := filepath.ToSlash(s.startRoot); cfg.StartFolder != want {
+		t.Fatalf("StartFolder = %q, want %q", cfg.StartFolder, want)
 	}
 }
 
