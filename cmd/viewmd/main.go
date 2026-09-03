@@ -62,7 +62,7 @@ func run(args []string) int {
 	flags := flag.NewFlagSet("viewmd", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 
-	folder := flags.String("folder", ".", "directory whose Markdown files to serve")
+	folder := flags.String("folder", ".", "directory (or GitHub URL) whose Markdown files to serve")
 	port := flags.Int("port", 8765, "HTTP listen port")
 	bind := flags.String("bind", "0.0.0.0", "listen address")
 	md := flags.String("md", "", "Markdown file (relative to --folder) to open first")
@@ -72,6 +72,9 @@ func run(args []string) int {
 	status := flags.Bool("status", false, "report whether a background instance is running")
 	pidFile := flags.String("pidfile", "", "pid file path (default <tmp>/viewmd-<port>.pid)")
 	logFile := flags.String("logfile", "", "daemon log path (default <tmp>/viewmd-<port>.log)")
+	githubToken := flags.String("github-token", "", "GitHub token for API access (raises the 60/hr\n"+
+		"                     unauthenticated rate limit to 5,000/hr; also needed for\n"+
+		"                     private repos); falls back to $GITHUB_TOKEN or $GH_TOKEN")
 	// --expose is parsed separately so the host port is optional.
 
 	flags.Usage = func() {
@@ -88,11 +91,16 @@ Commands:
   status             Report whether a background instance is running
 
 Flags:
-  --folder DIR       Root directory to scan (default "."); DIR alone (before
-                     any flags) is shorthand for --folder DIR
+  --folder DIR       Root directory to scan, or a GitHub URL such as
+                     https://github.com/OWNER/REPO/tree/BRANCH/PATH
+                     (default "."); DIR alone (before any flags) is
+                     shorthand for --folder DIR
   --port N           Listen port (default 8765)
   --bind ADDR        Listen address (default 0.0.0.0)
   --md FILE          Open this Markdown file first (relative to --folder)
+  --github-token TOK GitHub token for API access (raises the 60/hr
+                     unauthenticated rate limit to 5,000/hr; also needed for
+                     private repos); falls back to $GITHUB_TOKEN or $GH_TOKEN
   --expose [PORT]    After listen, run booth--expose <port> [PORT]
                      Host port defaults to the server port when omitted
   --server-only      Do not open a browser (the default is to open one)
@@ -110,6 +118,8 @@ Examples:
   viewmd --folder docs --port 8765 --expose
   viewmd --md README.md --expose 18765
   viewmd --folder ./docs --daemon        # background; --port picks the instance
+  viewmd https://github.com/NawaMan/CodingBooth/tree/main/docs
+  viewmd --folder https://github.com/OWNER/REPO --github-token ghp_xxx
   viewmd status
   viewmd stop --port 9000
   viewmd ./other-docs                    # if an instance is up on --port,
@@ -226,28 +236,62 @@ Examples:
 	}
 
 	// No running instance to retarget: this is a fresh start, so *folder and
-	// *md are resolved and validated against our own working directory, and
-	// reported to the terminal (rather than buried in the daemon log) before
-	// anything is spawned.
-	rootAbs, err := filepath.Abs(*folder)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error: folder:", err)
-		return 1
-	}
-	st, err := os.Stat(rootAbs)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error: folder:", err)
-		return 1
-	}
-	if !st.IsDir() {
-		fmt.Fprintln(os.Stderr, "Error: --folder is not a directory")
-		return 1
-	}
+	// *md are resolved and validated — against our own working directory for
+	// a local folder, against the GitHub API for a GitHub URL — and reported
+	// to the terminal (rather than buried in the daemon log) before anything
+	// is spawned. ghClient is built either way: even a local start may later
+	// be retargeted to a GitHub URL via /api/folder, and it costs nothing
+	// unused.
+	ghClient := newGitHubClient(resolveGitHubToken(*githubToken))
 
-	initial, err := normalizeInitialMd(rootAbs, *md)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		return 1
+	var rootAbs, initial string
+	if gh, ok := parseGitHubURL(*folder); ok {
+		ref := gh.Ref
+		if ref == "" {
+			var err error
+			ref, err = ghClient.DefaultBranch(gh.Owner, gh.Repo)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error: folder:", err)
+				return 1
+			}
+		}
+		exists, err := ghClient.DirExists(gh.Owner, gh.Repo, ref, gh.Path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error: folder:", err)
+			return 1
+		}
+		if !exists {
+			fmt.Fprintf(os.Stderr, "Error: folder: %q not found in %s/%s@%s\n", gh.Path, gh.Owner, gh.Repo, ref)
+			return 1
+		}
+		rootAbs = githubCanonicalURL(gh.Owner, gh.Repo, ref, gh.Path)
+		initial, err = normalizeInitialMdGitHub(ghClient, ghRoot{gh.Owner, gh.Repo, ref, gh.Path}, *md)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
+	} else {
+		var err error
+		rootAbs, err = filepath.Abs(*folder)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error: folder:", err)
+			return 1
+		}
+		st, err := os.Stat(rootAbs)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error: folder:", err)
+			return 1
+		}
+		if !st.IsDir() {
+			fmt.Fprintln(os.Stderr, "Error: --folder is not a directory")
+			return 1
+		}
+
+		initial, err = normalizeInitialMdLocal(rootAbs, *md)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			return 1
+		}
 	}
 
 	if *daemon && !daemonChild {
@@ -284,6 +328,7 @@ Examples:
 		initialMd: initial,
 		port:      *port,
 		web:       sub,
+		ghClient:  ghClient,
 	}
 
 	addr := net.JoinHostPort(*bind, strconv.Itoa(*port))
@@ -361,6 +406,19 @@ Examples:
 		<-shutdown
 	}
 	return 0
+}
+
+// resolveGitHubToken prefers an explicit --github-token, then $GITHUB_TOKEN,
+// then $GH_TOKEN (the env var gh itself and many CI systems already set),
+// so a token configured for other tooling works here without repeating it.
+func resolveGitHubToken(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if v := os.Getenv("GITHUB_TOKEN"); v != "" {
+		return v
+	}
+	return os.Getenv("GH_TOKEN")
 }
 
 // announceBrowser opens the viewer and reports — rather than fails — when

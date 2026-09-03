@@ -32,6 +32,7 @@ func testServer(t *testing.T) (*viewServer, string) {
 		initialMd: "README.md",
 		port:      8765,
 		web:       sub,
+		ghClient:  newGitHubClient(""),
 	}
 	return s, root
 }

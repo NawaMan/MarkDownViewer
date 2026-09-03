@@ -4,15 +4,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type serverConfig struct {
@@ -33,9 +36,17 @@ type viewServer struct {
 	port int
 	web  fs.FS
 
-	// startRoot is the directory viewmd was launched with. It never changes,
-	// and it bounds every later retarget: /api/folder may move root anywhere
-	// under startRoot, never above or beside it.
+	// ghClient serves every GitHub-backed root this server ever has, current
+	// or past: its blob cache is content-addressed (keyed by git sha) so it
+	// stays valid across a retarget, even one that moves to a different repo.
+	// It exists (with whatever token --github-token/$GITHUB_TOKEN resolved
+	// to at startup) whether or not the server currently has a GitHub root,
+	// so a later retarget to one needs no separate wiring.
+	ghClient *githubClient
+
+	// startRoot is the directory (or GitHub URL) viewmd was launched with. It
+	// never changes, and it bounds every later retarget: /api/folder may move
+	// root anywhere under startRoot, never above or beside it.
 	startRoot string
 
 	// root and initialMd change when /api/folder retargets the server, so
@@ -106,6 +117,15 @@ func (s *viewServer) handleTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	root, _ := s.state()
+	if gh, ok := parseGitHubURL(root); ok {
+		tree, err := s.ghClient.Tree(gh.Owner, gh.Repo, gh.Ref, gh.Path)
+		if err != nil {
+			writeGitHubError(w, err)
+			return
+		}
+		writeJSON(w, tree)
+		return
+	}
 	tree, err := buildTree(root)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -121,6 +141,26 @@ func (s *viewServer) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 	root, _ := s.state()
 	rel := r.URL.Query().Get("path")
+	if gh, ok := parseGitHubURL(root); ok {
+		repoPath, err := resolveGitHubPath(gh.Path, rel)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !isMarkdown(path.Base(repoPath)) {
+			http.Error(w, "not a markdown file", http.StatusBadRequest)
+			return
+		}
+		data, err := s.ghClient.ReadFile(gh.Owner, gh.Repo, gh.Ref, repoPath)
+		if err != nil {
+			writeGitHubError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(data)
+		return
+	}
 	abs, _, err := resolveUnderRoot(root, rel)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -154,6 +194,30 @@ func (s *viewServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	root, _ := s.state()
 	rel := r.URL.Query().Get("path")
+	if gh, ok := parseGitHubURL(root); ok {
+		repoPath, err := resolveGitHubPath(gh.Path, rel)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		ctype := assetContentType(repoPath)
+		if ctype == "" {
+			http.Error(w, "not a file type viewmd serves", http.StatusForbidden)
+			return
+		}
+		data, err := s.ghClient.ReadFile(gh.Owner, gh.Repo, gh.Ref, repoPath)
+		if err != nil {
+			writeGitHubError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", ctype)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if strings.EqualFold(path.Ext(repoPath), ".svg") {
+			w.Header().Set("Content-Security-Policy", "sandbox")
+		}
+		http.ServeContent(w, r, path.Base(repoPath), time.Time{}, bytes.NewReader(data))
+		return
+	}
 	abs, _, err := resolveUnderRoot(root, rel)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -222,19 +286,31 @@ func (s *viewServer) handleSetFolder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	st, err := os.Stat(rootAbs)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if !st.IsDir() {
-		http.Error(w, "folder is not a directory", http.StatusBadRequest)
-		return
+	if gh, ok := parseGitHubURL(rootAbs); ok {
+		exists, err := s.ghClient.DirExists(gh.Owner, gh.Repo, gh.Ref, gh.Path)
+		if err != nil {
+			writeGitHubError(w, err)
+			return
+		}
+		if !exists {
+			http.Error(w, "folder not found in repository", http.StatusBadRequest)
+			return
+		}
+	} else {
+		st, err := os.Stat(rootAbs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !st.IsDir() {
+			http.Error(w, "folder is not a directory", http.StatusBadRequest)
+			return
+		}
 	}
 	// The old initialMd almost certainly does not exist in the new tree, so it
 	// is only kept when the request names a file that does exist under the
 	// new root.
-	initial, err := normalizeInitialMd(rootAbs, req.Md)
+	initial, err := s.normalizeInitialMd(rootAbs, req.Md)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -248,22 +324,39 @@ func (s *viewServer) handleSetFolder(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// resolveWithinStart resolves folder to an absolute, cleaned path and rejects
-// it unless that path is startRoot itself or a descendant of it — no "..",
+// resolveWithinStart resolves folder to a cleaned root identifier and rejects
+// it unless that root is startRoot itself or a descendant of it — no "..",
 // no absolute path, no symlink-free traversal trick gets a request outside
-// the directory viewmd started with. A relative folder is resolved against
-// startRoot itself — the directory viewmd was launched with, not wherever
-// the server currently happens to be rooted — matching the mental model that
-// the starting directory is what every "change dir" relies on. The web UI
-// never sends a relative folder; it always computes the absolute path of
-// whichever tree entry was clicked and sends that instead. An absolute (or
-// Windows drive-relative) folder is taken as given and must still land
-// inside startRoot.
+// what viewmd started with. A relative folder is resolved against startRoot
+// itself — the directory (or GitHub folder) viewmd was launched with, not
+// wherever the server currently happens to be rooted — matching the mental
+// model that the starting point is what every "change dir" relies on. The
+// web UI never sends a relative folder; it always computes the absolute path
+// (or, for GitHub, the full canonical URL) of whichever tree entry was
+// clicked and sends that instead.
+//
+// A GitHub startRoot only ever accepts a GitHub folder in return, in the
+// same repo and at the same ref — retargeting cannot switch a running
+// server from browsing a repo to browsing the local disk, or vice versa, or
+// hop to a different repo/branch than the one it started on.
 func (s *viewServer) resolveWithinStart(folder string) (string, error) {
 	folder = strings.TrimSpace(folder)
 	if folder == "" {
 		return "", fmt.Errorf("folder is required")
 	}
+
+	if startGH, ok := parseGitHubURL(s.startRoot); ok {
+		gh, ok := parseGitHubURL(folder)
+		if !ok || !strings.EqualFold(gh.Owner, startGH.Owner) || !strings.EqualFold(gh.Repo, startGH.Repo) || gh.Ref != startGH.Ref {
+			return "", fmt.Errorf("folder must be within the starting repository %s", s.startRoot)
+		}
+		startPath := strings.Trim(startGH.Path, "/")
+		if startPath != "" && gh.Path != startPath && !strings.HasPrefix(gh.Path, startPath+"/") {
+			return "", fmt.Errorf("folder must be within the starting directory %s", s.startRoot)
+		}
+		return githubCanonicalURL(gh.Owner, gh.Repo, gh.Ref, gh.Path), nil
+	}
+
 	driveRelative := len(folder) > 1 && folder[1] == ':'
 	var candidate string
 	if filepath.IsAbs(folder) || driveRelative {
@@ -278,6 +371,15 @@ func (s *viewServer) resolveWithinStart(folder string) (string, error) {
 	return candidate, nil
 }
 
+// normalizeInitialMd dispatches to the local or GitHub form of --md / a
+// retarget's Md field, based on which kind of root rootAbs names.
+func (s *viewServer) normalizeInitialMd(rootAbs, md string) (string, error) {
+	if gh, ok := parseGitHubURL(rootAbs); ok {
+		return normalizeInitialMdGitHub(s.ghClient, gh, md)
+	}
+	return normalizeInitialMdLocal(rootAbs, md)
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	enc := json.NewEncoder(w)
@@ -287,9 +389,9 @@ func writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
-// normalizeInitialMd turns the --md argument into a slash-relative path under root,
-// or returns "" if empty. Verifies the file exists when non-empty.
-func normalizeInitialMd(root, md string) (string, error) {
+// normalizeInitialMdLocal turns the --md argument into a slash-relative path
+// under root, or returns "" if empty. Verifies the file exists when non-empty.
+func normalizeInitialMdLocal(root, md string) (string, error) {
 	md = strings.TrimSpace(md)
 	if md == "" {
 		return "", nil

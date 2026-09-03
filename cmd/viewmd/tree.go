@@ -5,6 +5,7 @@ package main
 
 import (
 	"io/fs"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -45,10 +46,8 @@ func buildTree(root string) (treeNode, error) {
 	}
 	rootAbs = filepath.Clean(rootAbs)
 
-	// path (slash, relative) -> list of file basenames in that dir
-	filesByDir := map[string][]string{}
-
-	err = filepath.WalkDir(rootAbs, func(path string, d fs.DirEntry, walkErr error) error {
+	var paths []string
+	err = filepath.WalkDir(rootAbs, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			// Skip unreadable entries
 			if d != nil && d.IsDir() {
@@ -58,7 +57,7 @@ func buildTree(root string) (treeNode, error) {
 		}
 		name := d.Name()
 		if d.IsDir() {
-			if path == rootAbs {
+			if p == rootAbs {
 				return nil
 			}
 			if skipDirNames[name] || strings.HasPrefix(name, ".") {
@@ -69,21 +68,34 @@ func buildTree(root string) (treeNode, error) {
 		if !isMarkdown(name) {
 			return nil
 		}
-		rel, err := filepath.Rel(rootAbs, path)
+		rel, err := filepath.Rel(rootAbs, p)
 		if err != nil {
 			return nil
 		}
-		rel = filepath.ToSlash(rel)
-		dir := filepath.ToSlash(filepath.Dir(rel))
-		if dir == "." {
-			dir = ""
-		}
-		base := filepath.Base(rel)
-		filesByDir[dir] = append(filesByDir[dir], base)
+		paths = append(paths, filepath.ToSlash(rel))
 		return nil
 	})
 	if err != nil {
 		return treeNode{}, err
+	}
+	return buildTreeFromPaths(paths), nil
+}
+
+// buildTreeFromPaths nests a flat list of slash-separated relative Markdown
+// file paths into a treeNode. It has no notion of where the paths came from
+// — buildTree feeds it a local walk, githubClient.Tree a filtered Git Trees
+// API listing — so it works purely on the "path" package's slash semantics
+// rather than the OS-specific ones "path/filepath" would apply on Windows.
+func buildTreeFromPaths(paths []string) treeNode {
+	// dir (slash, relative) -> list of file basenames in that dir
+	filesByDir := map[string][]string{}
+	for _, rel := range paths {
+		dir := path.Dir(rel)
+		if dir == "." {
+			dir = ""
+		}
+		base := path.Base(rel)
+		filesByDir[dir] = append(filesByDir[dir], base)
 	}
 
 	for k := range filesByDir {
@@ -132,11 +144,11 @@ func buildTree(root string) (treeNode, error) {
 		if d == "" {
 			continue
 		}
-		parent := filepath.ToSlash(filepath.Dir(d))
+		parent := path.Dir(d)
 		if parent == "." {
 			parent = ""
 		}
-		base := filepath.Base(d)
+		base := path.Base(d)
 		if p, ok := nodes[parent]; ok {
 			// copy child value (not pointer) into map
 			p.Dirs[base] = *nodes[d]
@@ -150,7 +162,7 @@ func buildTree(root string) (treeNode, error) {
 	if rootNode.Files == nil {
 		rootNode.Files = []string{}
 	}
-	return rootNode, nil
+	return rootNode
 }
 
 // listMarkdownPaths returns sorted relative slash paths of all markdown files.

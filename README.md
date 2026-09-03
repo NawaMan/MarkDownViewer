@@ -18,6 +18,10 @@ Browse a folder of Markdown files in your browser — single Go binary, embedded
 - **Change the base folder without restarting**: `viewmd DIR` retargets a
   running instance, and the sidebar has matching "set as base" icons —
   navigation always stays inside the directory viewmd was started with
+- **Browse a GitHub repo directly**, no clone needed:
+  `viewmd https://github.com/OWNER/REPO/tree/BRANCH/PATH` — pass
+  `--github-token` (or `$GITHUB_TOKEN`) to raise the API's 60/hour
+  unauthenticated rate limit or reach a private repo
 - **Daemon mode**: `--daemon` / `--status` / `--stop`, with graceful shutdown
 - Optional **CodingBooth** integration: `--expose` calls `booth--expose` when available
 
@@ -104,11 +108,16 @@ Commands:
   status             Report whether a background instance is running
 
 Flags:
-  --folder DIR       Root directory to scan (default "."); DIR alone (before
-                     any flags) is shorthand for --folder DIR
+  --folder DIR       Root directory to scan, or a GitHub URL such as
+                     https://github.com/OWNER/REPO/tree/BRANCH/PATH
+                     (default "."); DIR alone (before any flags) is
+                     shorthand for --folder DIR
   --port N           Listen port (default 8765)
   --bind ADDR        Listen address (default 0.0.0.0)
   --md FILE          Open this Markdown file first (relative to --folder)
+  --github-token TOK GitHub token for API access (raises the 60/hr
+                     unauthenticated rate limit to 5,000/hr; also needed for
+                     private repos); falls back to $GITHUB_TOKEN or $GH_TOKEN
   --expose [PORT]    After listen, run booth--expose <port> [PORT]
                      (no-op warning if booth--expose is not on PATH)
   --server-only      Do not open a browser (the default is to open one)
@@ -130,6 +139,39 @@ viewmd --md README.md --server-only                # serve only, no browser
 viewmd --folder . --md README.md --expose          # host port = server port
 viewmd --md README.md --expose 18765               # host 18765 → container port
 ```
+
+## Browsing a GitHub repo
+
+`--folder` (and the positional `DIR` shorthand) also accepts a GitHub URL. In
+that case viewmd fetches Markdown and images straight from the GitHub API
+instead of the local disk — nothing is cloned or written to disk:
+
+```bash
+viewmd https://github.com/NawaMan/CodingBooth/tree/main/docs
+viewmd --folder https://github.com/OWNER/REPO              # default branch, repo root
+viewmd --folder https://github.com/OWNER/REPO/tree/BRANCH/PATH
+```
+
+Everything else works the same way from there: the sidebar, relative
+links/images, "set as base folder", and `viewmd DIR` retargeting — though a
+GitHub-rooted instance can only retarget within the *same* repo and branch;
+it cannot hop to a different repo, switch branches, or move between GitHub
+and the local disk. A branch name containing `/` is not supported in the URL
+(there is no reliable way to tell where the branch ends and the path begins).
+
+GitHub's API rate-limits unauthenticated requests to 60/hour. viewmd does not
+retry or paper over that — when the limit is hit, the error (including when
+it resets) is shown wherever the request came from: the sidebar for a click,
+the terminal for a bad `--folder` at startup. Give it a token to raise the
+ceiling to 5,000/hour and to reach private repos:
+
+```bash
+viewmd --folder https://github.com/OWNER/REPO --github-token ghp_xxx
+GITHUB_TOKEN=ghp_xxx viewmd https://github.com/OWNER/REPO   # or $GH_TOKEN
+```
+
+The token only needs `repo` (or, for a public repo, no scopes at all) read
+access, and is only ever sent to `api.github.com`.
 
 ## Opening a browser
 

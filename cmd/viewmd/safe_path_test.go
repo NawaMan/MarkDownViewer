@@ -118,15 +118,15 @@ func TestNormalizeInitialMd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rel, err := normalizeInitialMd(root, "README.md")
+	rel, err := normalizeInitialMdLocal(root, "README.md")
 	if err != nil || rel != "README.md" {
 		t.Fatalf("rel=%q err=%v", rel, err)
 	}
-	rel, err = normalizeInitialMd(root, "./README.md")
+	rel, err = normalizeInitialMdLocal(root, "./README.md")
 	if err != nil || rel != "README.md" {
 		t.Fatalf("rel=%q err=%v", rel, err)
 	}
-	_, err = normalizeInitialMd(root, "missing.md")
+	_, err = normalizeInitialMdLocal(root, "missing.md")
 	if err == nil {
 		t.Fatal("expected missing")
 	}
