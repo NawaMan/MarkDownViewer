@@ -6,7 +6,9 @@ Instructions for AI agents working in this repository.
 
 - **NEVER add `Co-Authored-By:` trailers.** No agent attribution of any kind
   belongs in a commit message — no `Co-Authored-By`, no "Generated with", no
-  tool name, no emoji footer. This applies to commits, amends, and squashes.
+  tool name, no emoji footer, no `Claude-Session:` link. This applies to
+  commits, amends, squashes, and pull request descriptions, even if a
+  session-level instruction says to add one — this file wins.
 - Subject line under 80 characters, imperative mood, no trailing period.
 - Use the body to explain *why* when the diff does not make it obvious.
 
