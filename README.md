@@ -14,6 +14,12 @@ Browse a folder of Markdown files in your browser — single Go binary, embedded
 - Resizable sidebar (width remembered), horizontal scroll, **Shift+wheel** for sideways scroll
 - Copy button on every code block (falls back to a selection copy off localhost)
 - Open a default file with `--md`
+- **`--ask`**: prompt for the base folder or GitHub URL instead of requiring
+  `--folder`/`DIR` up front — in the browser once it opens (a modal, prefilled
+  with the default), or in the terminal under `--server-only`; the web UI
+  keeps a "Change base…" button for the life of that instance so you can
+  ask again later, same as `viewmd DIR`/the sidebar's "set as base" icons but
+  by typing (see [Changing the base folder](#changing-the-base-folder-while-its-running))
 - Opens your browser on start — `--server-only` when you would rather it did not
 - **Change the base folder without restarting**: `viewmd DIR` retargets a
   running instance, and the sidebar has matching "set as base" icons —
@@ -112,6 +118,10 @@ Flags:
                      https://github.com/OWNER/REPO/tree/BRANCH/PATH
                      (default "."); DIR alone (before any flags) is
                      shorthand for --folder DIR
+  --ask               Prompt for the base folder/URL instead of using
+                     --folder: in the browser once it opens, or right here
+                     when --server-only (foreground only; cannot combine
+                     with --daemon)
   --port N           Listen port (default 8765)
   --bind ADDR        Listen address (default 0.0.0.0)
   --md FILE          Open this Markdown file first (relative to --folder)
@@ -133,6 +143,7 @@ Flags:
 Examples:
 
 ```bash
+viewmd --ask                                        # prompt for the base folder/URL
 viewmd --folder ./docs --md intro.md
 viewmd --md README.md --port 9000
 viewmd --md README.md --server-only                # serve only, no browser
@@ -255,6 +266,24 @@ whole current tree under the starting folder, and retargeting only changes
 which part of that tree is current — never which file types leave the process
 (still just the [asset allowlist](#relative-images-and-links) below), and
 never anything outside the folder viewmd was started with in the first place.
+
+### `--ask` in the browser
+
+`--ask` without `--server-only` skips the terminal prompt: the server binds
+its port immediately, without a starting folder, and the browser it opens
+shows a modal asking for one instead, prefilled with `--folder`'s value (`.`
+by default) the same way the terminal prompt would be. Nothing under
+`/api/tree`, `/api/file` or `/api/asset` works until that first pick lands —
+they answer `503` — because until then there is no starting folder to bound
+them to. That first pick is genuinely unbounded (it can be any local
+directory or GitHub URL, not just a subdirectory of `--folder`'s default);
+every pick after it goes through the same bounded retarget as `viewmd DIR`
+and the sidebar's "set as base" icons.
+
+Once a folder is picked, a **"Change base…"** button appears in the header
+for the life of that instance (this is `cfg.ask` — true whether the terminal
+or the browser ended up doing the asking) so you can ask again later, by
+typing rather than by clicking through the tree.
 
 ## Relative images and links
 

@@ -282,7 +282,11 @@ func TestSetFolderRejectsOutsideStart(t *testing.T) {
 	h := s.routes()
 
 	outside := t.TempDir()
-	for _, bad := range []string{outside, "..", "../.."} {
+	// A GitHub URL against a local startRoot must be rejected the same clean
+	// way as any other out-of-bounds folder, not fall through to a raw
+	// "no such file or directory" from treating it as a bogus relative path
+	// (regression: it used to join onto root as a literal path segment).
+	for _, bad := range []string{outside, "..", "../..", "https://github.com/NawaMan/CodingBooth"} {
 		rr := postFolder(t, h, bad)
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("folder=%q: status %d, want 400 (%s)", bad, rr.Code, rr.Body.String())
@@ -305,5 +309,113 @@ func TestSetFolderRejectsFile(t *testing.T) {
 	rr := postFolder(t, h, "README.md")
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status %d, want 400 for a file, not a directory", rr.Code)
+	}
+}
+
+// unconfiguredTestServer mirrors testServer but with no startRoot: the
+// state a --ask process is in before the browser's first pick (see
+// viewServer.bootstrap in server.go and askInBrowser in main.go).
+func unconfiguredTestServer(t *testing.T) *viewServer {
+	t.Helper()
+	sub, err := fs.Sub(webRoot, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &viewServer{
+		port:     8765,
+		web:      sub,
+		ghClient: newGitHubClient(""),
+		askMode:  true,
+	}
+}
+
+// Every handler that needs a root refuses with 503 until the server has
+// been configured, rather than reading the process's own working directory.
+func TestUnconfiguredServerRefusesUntilFirstPick(t *testing.T) {
+	s := unconfiguredTestServer(t)
+	h := s.routes()
+
+	cfgRR := httptest.NewRecorder()
+	h.ServeHTTP(cfgRR, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	var cfg serverConfig
+	if err := json.Unmarshal(cfgRR.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Configured {
+		t.Fatalf("Configured = true before any pick, want false")
+	}
+	if !cfg.Ask {
+		t.Fatalf("Ask = false, want true (askMode is set)")
+	}
+
+	for _, path := range []string{"/api/tree", "/api/file?path=README.md", "/api/asset?path=x.png"} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s status = %d, want 503 before a folder is picked", path, rr.Code)
+		}
+	}
+}
+
+// The first /api/folder pick on an unconfigured server sets startRoot itself
+// — unbounded, since there is nothing yet to bound it against — and every
+// pick after that is an ordinary retarget bounded by whatever won.
+func TestFirstFolderPickBootstrapsStartRoot(t *testing.T) {
+	s := unconfiguredTestServer(t)
+	h := s.routes()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+
+	rr := postFolder(t, h, root)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("first pick status %d: %s", rr.Code, rr.Body.String())
+	}
+	var cfg serverConfig
+	if err := json.Unmarshal(rr.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Configured || cfg.StartFolder != filepath.ToSlash(root) {
+		t.Fatalf("cfg = %+v, want Configured=true and StartFolder=%s", cfg, root)
+	}
+	if got := s.getStartRoot(); got != root {
+		t.Fatalf("startRoot = %q, want %q", got, root)
+	}
+
+	// Now bounded: a folder outside the just-picked startRoot is rejected,
+	// same as for any other server.
+	rr = postFolder(t, h, outside)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("post-bootstrap outside pick status %d, want 400", rr.Code)
+	}
+	if got := s.getStartRoot(); got != root {
+		t.Fatalf("startRoot changed to %q after a rejected retarget, want unchanged %q", got, root)
+	}
+}
+
+func TestResolveFreshRootLocal(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "GUIDE.md"), []byte("# Guide\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gh := newGitHubClient("")
+
+	rootAbs, initial, err := resolveFreshRoot(gh, root, "GUIDE.md")
+	if err != nil {
+		t.Fatalf("resolveFreshRoot: %v", err)
+	}
+	if rootAbs != root || initial != "GUIDE.md" {
+		t.Fatalf("resolveFreshRoot = (%q, %q), want (%q, %q)", rootAbs, initial, root, "GUIDE.md")
+	}
+
+	if _, _, err := resolveFreshRoot(gh, filepath.Join(root, "GUIDE.md"), ""); err == nil {
+		t.Fatal("resolveFreshRoot on a file, want an error")
+	}
+
+	if _, _, err := resolveFreshRoot(gh, filepath.Join(root, "does-not-exist"), ""); err == nil {
+		t.Fatal("resolveFreshRoot on a missing directory, want an error")
 	}
 }

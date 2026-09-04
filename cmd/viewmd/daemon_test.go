@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -459,6 +461,111 @@ func TestRelativeRetargetResolvesAgainstStartingFolder(t *testing.T) {
 	cfg2.Body.Close()
 	if !strings.Contains(string(cfgBody2), manualSlash) || strings.Contains(string(cfgBody2), filepath.ToSlash(filepath.Join(docs, "manual"))) {
 		t.Fatalf("config = %s, want it to mention %s and not a manual nested under docs", cfgBody2, manualSlash)
+	}
+}
+
+// TestAskDefersToBrowserWhenNotServerOnly starts a real --ask process without
+// --server-only: startup must not block waiting on stdin (there is no
+// terminal prompt in this path — a browser is expected to ask instead), the
+// server must come up unconfigured, and its first /api/folder pick — what
+// the web UI's ask modal sends — must set startRoot from scratch and unlock
+// the rest of the API.
+func TestAskDefersToBrowserWhenNotServerOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and spawns a process")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "viewmd")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build failed: %v\n%s", err, out)
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	port := freePort(t)
+	pidPath := filepath.Join(dir, "viewmd.pid")
+	logPath := filepath.Join(dir, "viewmd.log")
+	logF, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logF.Close()
+
+	cmd := exec.Command(bin, "--ask", "--bind", "127.0.0.1", "--port", strconv.Itoa(port), "--pidfile", pidPath)
+	cmd.Stdout = logF
+	cmd.Stderr = logF
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command(bin, "stop", "--port", strconv.Itoa(port), "--pidfile", pidPath).Run()
+	})
+
+	deadline := time.Now().Add(startupTimeout)
+	var pid int
+	for time.Now().Before(deadline) {
+		if p, err := runningPid(pidPath); err == nil && p > 0 {
+			pid = p
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if pid == 0 {
+		logs, _ := os.ReadFile(logPath)
+		t.Fatalf("server did not come up (stdin-blocked?): %s", logs)
+	}
+
+	cfgResp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/config", port))
+	if err != nil {
+		t.Fatalf("not serving: %v", err)
+	}
+	cfgBody, _ := io.ReadAll(cfgResp.Body)
+	cfgResp.Body.Close()
+	if !strings.Contains(string(cfgBody), `"configured":false`) {
+		t.Fatalf("config = %s, want unconfigured before the first pick", cfgBody)
+	}
+
+	treeResp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/tree", port))
+	if err != nil {
+		t.Fatalf("tree request failed: %v", err)
+	}
+	treeResp.Body.Close()
+	if treeResp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("tree status = %d, want 503 before a folder is picked", treeResp.StatusCode)
+	}
+
+	reqBody, err := json.Marshal(setFolderRequest{Folder: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setResp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/api/folder", port), "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("set folder failed: %v", err)
+	}
+	setBody, _ := io.ReadAll(setResp.Body)
+	setResp.Body.Close()
+	rootSlash := filepath.ToSlash(root)
+	if setResp.StatusCode != http.StatusOK || !strings.Contains(string(setBody), rootSlash) || !strings.Contains(string(setBody), `"configured":true`) {
+		t.Fatalf("set folder status %d, body %s, want 200 with configured:true and folder %s", setResp.StatusCode, setBody, rootSlash)
+	}
+
+	treeResp2, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/tree", port))
+	if err != nil {
+		t.Fatalf("tree request failed: %v", err)
+	}
+	treeResp2.Body.Close()
+	if treeResp2.StatusCode != http.StatusOK {
+		t.Fatalf("tree status = %d, want 200 after a folder is picked", treeResp2.StatusCode)
 	}
 }
 

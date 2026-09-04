@@ -23,6 +23,20 @@ type serverConfig struct {
 	InitialMd   string `json:"initialMd,omitempty"`
 	Port        int    `json:"port"`
 	StartFolder string `json:"startFolder"`
+	// Configured is false only for a server that deferred picking its start
+	// folder to the browser (--ask with a browser to ask in) and has not
+	// received its first /api/folder pick yet. Every other server is always
+	// configured, from construction.
+	Configured bool `json:"configured"`
+	// Ask is true when the process was started with --ask, regardless of
+	// whether the terminal or the browser ended up doing the asking: the web
+	// UI keeps its "change folder" control available for the life of the
+	// server either way.
+	Ask bool `json:"ask,omitempty"`
+	// AskDefault is the raw, unresolved --folder/DIR this process started
+	// with. It only matters while Configured is false: the browser's first
+	// ask prefills its input with it, same as the CLI prompt's own default.
+	AskDefault string `json:"askDefault,omitempty"`
 }
 
 // setFolderRequest is the body of POST /api/folder: it retargets a running
@@ -44,14 +58,30 @@ type viewServer struct {
 	// so a later retarget to one needs no separate wiring.
 	ghClient *githubClient
 
-	// startRoot is the directory (or GitHub URL) viewmd was launched with. It
-	// never changes, and it bounds every later retarget: /api/folder may move
-	// root anywhere under startRoot, never above or beside it.
-	startRoot string
+	// askMode is true when the process was started with --ask, whichever way
+	// (terminal or browser) this instance ended up configured. It drives
+	// serverConfig.Ask, and never changes after construction.
+	askMode bool
 
-	// root and initialMd change when /api/folder retargets the server, so
-	// every read and write goes through mu.
+	// askDefault and askInitialMd are the raw, unresolved --folder/--md this
+	// process was started with. They matter only before the server is
+	// configured: the browser's first pick prefills its input with
+	// askDefault, and falls back to askInitialMd when that pick names no
+	// file of its own. Neither changes after construction.
+	askDefault   string
+	askInitialMd string
+
+	// startRoot is the directory (or GitHub URL) viewmd's trust boundary is
+	// anchored to: it bounds every later retarget, which may move root
+	// anywhere under startRoot, never above or beside it. For almost every
+	// server it is known at construction and never changes again. The one
+	// exception is a server that deferred it to the browser (--ask with a
+	// browser to ask in, see main.go): that one constructs with startRoot
+	// empty and sets it exactly once, from the browser's first successful
+	// /api/folder pick — see bootstrap. Guarded by mu for that reason, even
+	// though it is otherwise as good as immutable.
 	mu        sync.RWMutex
+	startRoot string
 	root      string // absolute folder root
 	initialMd string // relative path or empty
 }
@@ -69,6 +99,50 @@ func (s *viewServer) setFolder(rootAbs, initialMd string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.root, s.initialMd = rootAbs, initialMd
+}
+
+// getStartRoot returns startRoot, which is empty only for a --ask server
+// still waiting on the browser's first pick.
+func (s *viewServer) getStartRoot() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.startRoot
+}
+
+// configured reports whether startRoot has been set yet.
+func (s *viewServer) configured() bool {
+	return s.getStartRoot() != ""
+}
+
+// bootstrap sets startRoot for the first time, on a server that deferred it
+// to the browser. It succeeds only once; a losing call — two requests racing
+// to be the first pick — reports false so the caller can fall through and
+// treat it as an ordinary retarget bounded by whichever root won, rather
+// than erroring out.
+func (s *viewServer) bootstrap(rootAbs, initialMd string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.startRoot != "" {
+		return false
+	}
+	s.startRoot, s.root, s.initialMd = rootAbs, rootAbs, initialMd
+	return true
+}
+
+// configSnapshot is the JSON body for /api/config and every /api/folder
+// response: a single consistent read of every field the client needs.
+func (s *viewServer) configSnapshot() serverConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return serverConfig{
+		Folder:      filepath.ToSlash(s.root),
+		InitialMd:   s.initialMd,
+		Port:        s.port,
+		StartFolder: filepath.ToSlash(s.startRoot),
+		Configured:  s.startRoot != "",
+		Ask:         s.askMode,
+		AskDefault:  s.askDefault,
+	}
 }
 
 func (s *viewServer) routes() http.Handler {
@@ -102,18 +176,27 @@ func (s *viewServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	root, initialMd := s.state()
-	writeJSON(w, serverConfig{
-		Folder:      filepath.ToSlash(root),
-		InitialMd:   initialMd,
-		Port:        s.port,
-		StartFolder: filepath.ToSlash(s.startRoot),
-	})
+	writeJSON(w, s.configSnapshot())
+}
+
+// requireConfigured answers 503 and returns false for a handler that needs a
+// root while the server is still waiting for its first /api/folder pick (a
+// deferred --ask start, see bootstrap) — otherwise buildTree and friends
+// would read whatever the process's own working directory happens to be.
+func (s *viewServer) requireConfigured(w http.ResponseWriter) bool {
+	if s.configured() {
+		return true
+	}
+	http.Error(w, "no base folder set yet", http.StatusServiceUnavailable)
+	return false
 }
 
 func (s *viewServer) handleTree(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireConfigured(w) {
 		return
 	}
 	root, _ := s.state()
@@ -137,6 +220,9 @@ func (s *viewServer) handleTree(w http.ResponseWriter, r *http.Request) {
 func (s *viewServer) handleFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireConfigured(w) {
 		return
 	}
 	root, _ := s.state()
@@ -190,6 +276,9 @@ func (s *viewServer) handleFile(w http.ResponseWriter, r *http.Request) {
 func (s *viewServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireConfigured(w) {
 		return
 	}
 	root, _ := s.state()
@@ -262,7 +351,7 @@ func (s *viewServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 
 // handleSetFolder retargets the running server at a different directory
 // without a restart: `viewmd DIR` sends this when an instance is already
-// serving the requested port, and the web UI's "Change folder" control uses
+// serving the requested port, and the web UI's "Change base" control uses
 // it too. The new folder must resolve inside startRoot — the directory viewmd
 // was launched with — so this cannot be used to climb out to the rest of the
 // filesystem; it carries the same trust boundary as every other endpoint
@@ -271,6 +360,13 @@ func (s *viewServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 // only changes which part of that subtree is current (see assetTypes in
 // asset.go for the separate limit on which file types ever leave the
 // process).
+//
+// The one exception is a server that deferred picking startRoot to the
+// browser (--ask with a browser to ask in, see main.go): its first-ever call
+// here has nothing yet to bound req.Folder against, so it sets startRoot
+// itself — see bootstrap — instead of being checked against it. Every call
+// after that, on that server as on any other, is an ordinary bounded
+// retarget.
 func (s *viewServer) handleSetFolder(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -281,6 +377,25 @@ func (s *viewServer) handleSetFolder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+
+	if !s.configured() {
+		md := req.Md
+		if md == "" {
+			md = s.askInitialMd
+		}
+		rootAbs, initial, err := resolveFreshRoot(s.ghClient, req.Folder, md)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if s.bootstrap(rootAbs, initial) {
+			writeJSON(w, s.configSnapshot())
+			return
+		}
+		// Lost a race with a concurrent first pick; fall through and treat
+		// this one as an ordinary retarget bounded by whichever root won.
+	}
+
 	rootAbs, err := s.resolveWithinStart(req.Folder)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -316,12 +431,7 @@ func (s *viewServer) handleSetFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setFolder(rootAbs, initial)
-	writeJSON(w, serverConfig{
-		Folder:      filepath.ToSlash(rootAbs),
-		InitialMd:   initial,
-		Port:        s.port,
-		StartFolder: filepath.ToSlash(s.startRoot),
-	})
+	writeJSON(w, s.configSnapshot())
 }
 
 // resolveWithinStart resolves folder to a cleaned root identifier and rejects
@@ -344,17 +454,29 @@ func (s *viewServer) resolveWithinStart(folder string) (string, error) {
 	if folder == "" {
 		return "", fmt.Errorf("folder is required")
 	}
+	start := s.getStartRoot()
 
-	if startGH, ok := parseGitHubURL(s.startRoot); ok {
+	if startGH, ok := parseGitHubURL(start); ok {
 		gh, ok := parseGitHubURL(folder)
 		if !ok || !strings.EqualFold(gh.Owner, startGH.Owner) || !strings.EqualFold(gh.Repo, startGH.Repo) || gh.Ref != startGH.Ref {
-			return "", fmt.Errorf("folder must be within the starting repository %s", s.startRoot)
+			return "", fmt.Errorf("folder must be within the starting repository %s", start)
 		}
 		startPath := strings.Trim(startGH.Path, "/")
 		if startPath != "" && gh.Path != startPath && !strings.HasPrefix(gh.Path, startPath+"/") {
-			return "", fmt.Errorf("folder must be within the starting directory %s", s.startRoot)
+			return "", fmt.Errorf("folder must be within the starting directory %s", start)
 		}
 		return githubCanonicalURL(gh.Owner, gh.Repo, gh.Ref, gh.Path), nil
+	}
+
+	// start is local: a GitHub URL can never resolve inside it (retargeting
+	// cannot switch a running server from the local disk to browsing a
+	// repo). Reject it here with the same message a real out-of-bounds path
+	// gets, rather than falling into the code below, which would otherwise
+	// treat "https://github.com/owner/repo" as a bogus relative path
+	// segment, join it onto start, and fail later with a confusing raw stat
+	// error instead of this one.
+	if _, ok := parseGitHubURL(folder); ok {
+		return "", fmt.Errorf("folder must be within the starting directory %s", start)
 	}
 
 	driveRelative := len(folder) > 1 && folder[1] == ':'
@@ -362,11 +484,11 @@ func (s *viewServer) resolveWithinStart(folder string) (string, error) {
 	if filepath.IsAbs(folder) || driveRelative {
 		candidate = filepath.Clean(folder)
 	} else {
-		candidate = filepath.Clean(filepath.Join(s.startRoot, folder))
+		candidate = filepath.Clean(filepath.Join(start, folder))
 	}
 	sep := string(filepath.Separator)
-	if candidate != s.startRoot && !strings.HasPrefix(candidate, s.startRoot+sep) {
-		return "", fmt.Errorf("folder must be within the starting directory %s", s.startRoot)
+	if candidate != start && !strings.HasPrefix(candidate, start+sep) {
+		return "", fmt.Errorf("folder must be within the starting directory %s", start)
 	}
 	return candidate, nil
 }
@@ -378,6 +500,55 @@ func (s *viewServer) normalizeInitialMd(rootAbs, md string) (string, error) {
 		return normalizeInitialMdGitHub(s.ghClient, gh, md)
 	}
 	return normalizeInitialMdLocal(rootAbs, md)
+}
+
+// resolveFreshRoot validates folder — a local directory or a GitHub URL —
+// with no bounding startRoot to check it against, and resolves it to an
+// absolute root plus its normalized initial Markdown file. It is the shared
+// core of picking a startRoot from scratch: main.go uses it for every
+// ordinary CLI startup, and handleSetFolder uses it for a server that
+// deferred that pick to the browser instead.
+func resolveFreshRoot(ghClient *githubClient, folder, md string) (string, string, error) {
+	if gh, ok := parseGitHubURL(folder); ok {
+		ref := gh.Ref
+		if ref == "" {
+			resolved, err := ghClient.DefaultBranch(gh.Owner, gh.Repo)
+			if err != nil {
+				return "", "", fmt.Errorf("folder: %w", err)
+			}
+			ref = resolved
+		}
+		exists, err := ghClient.DirExists(gh.Owner, gh.Repo, ref, gh.Path)
+		if err != nil {
+			return "", "", fmt.Errorf("folder: %w", err)
+		}
+		if !exists {
+			return "", "", fmt.Errorf("folder: %q not found in %s/%s@%s", gh.Path, gh.Owner, gh.Repo, ref)
+		}
+		rootAbs := githubCanonicalURL(gh.Owner, gh.Repo, ref, gh.Path)
+		initial, err := normalizeInitialMdGitHub(ghClient, ghRoot{gh.Owner, gh.Repo, ref, gh.Path}, md)
+		if err != nil {
+			return "", "", err
+		}
+		return rootAbs, initial, nil
+	}
+
+	rootAbs, err := filepath.Abs(folder)
+	if err != nil {
+		return "", "", fmt.Errorf("folder: %w", err)
+	}
+	st, err := os.Stat(rootAbs)
+	if err != nil {
+		return "", "", fmt.Errorf("folder: %w", err)
+	}
+	if !st.IsDir() {
+		return "", "", fmt.Errorf("folder is not a directory")
+	}
+	initial, err := normalizeInitialMdLocal(rootAbs, md)
+	if err != nil {
+		return "", "", err
+	}
+	return rootAbs, initial, nil
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

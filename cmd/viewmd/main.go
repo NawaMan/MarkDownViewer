@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"embed"
@@ -21,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -63,6 +63,10 @@ func run(args []string) int {
 	flags.SetOutput(os.Stderr)
 
 	folder := flags.String("folder", ".", "directory (or GitHub URL) whose Markdown files to serve")
+	ask := flags.Bool("ask", false, "prompt for the base folder or GitHub URL instead of using --folder:\n"+
+		"                     in the browser once it opens, or right here when\n"+
+		"                     --server-only (foreground only; cannot combine with\n"+
+		"                     --daemon)")
 	port := flags.Int("port", 8765, "HTTP listen port")
 	bind := flags.String("bind", "0.0.0.0", "listen address")
 	md := flags.String("md", "", "Markdown file (relative to --folder) to open first")
@@ -95,6 +99,10 @@ Flags:
                      https://github.com/OWNER/REPO/tree/BRANCH/PATH
                      (default "."); DIR alone (before any flags) is
                      shorthand for --folder DIR
+  --ask               Prompt for the base folder/URL instead of using
+                     --folder: in the browser once it opens, or right here
+                     when --server-only (foreground only; cannot combine
+                     with --daemon)
   --port N           Listen port (default 8765)
   --bind ADDR        Listen address (default 0.0.0.0)
   --md FILE          Open this Markdown file first (relative to --folder)
@@ -113,6 +121,7 @@ Flags:
   -h, --help         Show this help
 
 Examples:
+  viewmd --ask                           # prompt for the base folder/URL
   viewmd --folder . --md README.md
   viewmd --folder . --md README.md --server-only   # no browser (headless, CI)
   viewmd --folder docs --port 8765 --expose
@@ -182,6 +191,10 @@ Examples:
 		fmt.Fprintln(os.Stderr, "Error: stop and status are mutually exclusive")
 		return 2
 	}
+	if *ask && *daemon {
+		fmt.Fprintln(os.Stderr, "Error: --ask cannot be combined with --daemon (not supported yet); pass --folder instead")
+		return 2
+	}
 	if stopReq {
 		pid, err := stopDaemon(pidPath, stopTimeout)
 		if err != nil {
@@ -211,6 +224,22 @@ Examples:
 	}
 
 	daemonChild := os.Getenv(daemonEnv) != ""
+
+	// --ask defers the prompt to the browser whenever one is going to open: a
+	// modal there beats typing into the terminal, and — since startRoot has
+	// not been fixed yet (see viewServer.bootstrap in server.go) — the pick
+	// can be genuinely anything, not just a subdirectory of --folder's
+	// default. --server-only has no browser to defer to, so it still prompts
+	// right here, exactly as before deferring existed.
+	askInBrowser := *ask && !*serverOnly
+	if *ask && !askInBrowser {
+		resolved, err := promptForFolder(os.Stdin, os.Stderr, *folder)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error: ask:", err)
+			return 2
+		}
+		*folder = resolved
+	}
 
 	// An instance already answers on this port: rather than fail to bind (or,
 	// for --daemon, fail to start a second one), retarget it live over
@@ -242,52 +271,17 @@ Examples:
 	// is spawned. ghClient is built either way: even a local start may later
 	// be retargeted to a GitHub URL via /api/folder, and it costs nothing
 	// unused.
+	//
+	// askInBrowser leaves rootAbs/initial unresolved: the server starts
+	// without a startRoot and the browser's ask modal picks one on its first
+	// /api/folder call instead (see resolveFreshRoot and
+	// viewServer.bootstrap in server.go).
 	ghClient := newGitHubClient(resolveGitHubToken(*githubToken))
 
 	var rootAbs, initial string
-	if gh, ok := parseGitHubURL(*folder); ok {
-		ref := gh.Ref
-		if ref == "" {
-			var err error
-			ref, err = ghClient.DefaultBranch(gh.Owner, gh.Repo)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "Error: folder:", err)
-				return 1
-			}
-		}
-		exists, err := ghClient.DirExists(gh.Owner, gh.Repo, ref, gh.Path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error: folder:", err)
-			return 1
-		}
-		if !exists {
-			fmt.Fprintf(os.Stderr, "Error: folder: %q not found in %s/%s@%s\n", gh.Path, gh.Owner, gh.Repo, ref)
-			return 1
-		}
-		rootAbs = githubCanonicalURL(gh.Owner, gh.Repo, ref, gh.Path)
-		initial, err = normalizeInitialMdGitHub(ghClient, ghRoot{gh.Owner, gh.Repo, ref, gh.Path}, *md)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error:", err)
-			return 1
-		}
-	} else {
+	if !askInBrowser {
 		var err error
-		rootAbs, err = filepath.Abs(*folder)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error: folder:", err)
-			return 1
-		}
-		st, err := os.Stat(rootAbs)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error: folder:", err)
-			return 1
-		}
-		if !st.IsDir() {
-			fmt.Fprintln(os.Stderr, "Error: --folder is not a directory")
-			return 1
-		}
-
-		initial, err = normalizeInitialMdLocal(rootAbs, *md)
+		rootAbs, initial, err = resolveFreshRoot(ghClient, *folder, *md)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			return 1
@@ -323,12 +317,15 @@ Examples:
 	}
 
 	srv := &viewServer{
-		startRoot: rootAbs,
-		root:      rootAbs,
-		initialMd: initial,
-		port:      *port,
-		web:       sub,
-		ghClient:  ghClient,
+		startRoot:    rootAbs,
+		root:         rootAbs,
+		initialMd:    initial,
+		port:         *port,
+		web:          sub,
+		ghClient:     ghClient,
+		askMode:      *ask,
+		askDefault:   *folder,
+		askInitialMd: *md,
 	}
 
 	addr := net.JoinHostPort(*bind, strconv.Itoa(*port))
@@ -355,7 +352,11 @@ Examples:
 		defer os.Remove(pidPath)
 	}
 
-	fmt.Fprintf(os.Stderr, "viewmd v%s serving %s on %s\n", version, rootAbs, browsableURL(*bind, *port))
+	if askInBrowser {
+		fmt.Fprintf(os.Stderr, "viewmd v%s waiting for a base folder on %s\n", version, browsableURL(*bind, *port))
+	} else {
+		fmt.Fprintf(os.Stderr, "viewmd v%s serving %s on %s\n", version, rootAbs, browsableURL(*bind, *port))
+	}
 	if note := bindNote(*bind); note != "" {
 		fmt.Fprintf(os.Stderr, "  listen:       %s (%s)\n", addr, note)
 	}
@@ -419,6 +420,24 @@ func resolveGitHubToken(flagVal string) string {
 		return v
 	}
 	return os.Getenv("GH_TOKEN")
+}
+
+// promptForFolder asks on w for a local folder or GitHub URL and reads a
+// single line from r, trimming surrounding whitespace. An empty line, or
+// EOF (r is not a terminal and has nothing queued), keeps def.
+func promptForFolder(r io.Reader, w io.Writer, def string) (string, error) {
+	fmt.Fprintf(w, "Base folder or GitHub URL [%s]: ", def)
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", err
+		}
+		return def, nil
+	}
+	if line := strings.TrimSpace(scanner.Text()); line != "" {
+		return line, nil
+	}
+	return def, nil
 }
 
 // announceBrowser opens the viewer and reports — rather than fails — when

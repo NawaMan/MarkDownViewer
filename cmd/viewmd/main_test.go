@@ -11,6 +11,35 @@ import (
 	"testing"
 )
 
+func TestPromptForFolder(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		def   string
+		want  string
+	}{
+		{"typed value overrides default", "docs\n", ".", "docs"},
+		{"blank line keeps default", "\n", ".", "."},
+		{"surrounding whitespace is trimmed", "  docs  \n", ".", "docs"},
+		{"EOF with nothing typed keeps default", "", ".", "."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var prompt strings.Builder
+			got, err := promptForFolder(strings.NewReader(tt.input), &prompt, tt.def)
+			if err != nil {
+				t.Fatalf("promptForFolder: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("promptForFolder(%q, def=%q) = %q, want %q", tt.input, tt.def, got, tt.want)
+			}
+			if !strings.Contains(prompt.String(), tt.def) {
+				t.Errorf("prompt %q does not mention default %q", prompt.String(), tt.def)
+			}
+		})
+	}
+}
+
 // captureStdout redirects os.Stdout for the duration of fn.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
@@ -123,6 +152,14 @@ func TestStopAndStatusCommands(t *testing.T) {
 		if _, err := os.Stat(stale); !os.IsNotExist(err) {
 			t.Errorf("run(%v) left the stale pid file behind", args)
 		}
+	}
+}
+
+// --ask has no terminal to prompt on inside a daemon child, so the two
+// cannot be combined.
+func TestAskCannotCombineWithDaemon(t *testing.T) {
+	if code := run([]string{"--ask", "--daemon"}); code != 2 {
+		t.Fatalf("run(--ask --daemon) = %d, want 2", code)
 	}
 }
 

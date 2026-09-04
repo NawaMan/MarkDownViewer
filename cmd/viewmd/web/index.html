@@ -196,6 +196,52 @@ body.sidebar-resizing #content { pointer-events: none; }
 }
 #err:not(:empty) { display: block; }
 
+/* "Change base…" header button and the ask modal it (and a deferred
+   --ask start's first-run prompt) both open. See the "ask" section of the
+   script for when each shows up. */
+#ask-again-btn {
+  flex: 0 0 auto;
+  border: 1px solid var(--border); background: transparent; color: var(--fg);
+  font: inherit; font-size: .78rem; padding: .25rem .6rem; border-radius: 6px;
+  cursor: pointer;
+}
+#ask-again-btn:hover { border-color: var(--accent); color: var(--accent); }
+#ask-again-btn[hidden] { display: none; }
+
+#ask-overlay {
+  position: fixed; inset: 0; z-index: 20;
+  background: color-mix(in srgb, #000 45%, transparent);
+  display: flex; align-items: center; justify-content: center; padding: 1rem;
+}
+#ask-overlay[hidden] { display: none; }
+#ask-dialog {
+  width: min(30rem, 100%);
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 1.25rem 1.4rem;
+  box-shadow: 0 10px 40px color-mix(in srgb, #000 35%, transparent);
+}
+#ask-dialog h2 { margin: 0 0 .4rem; font-size: 1.05rem; }
+.ask-hint { margin: 0 0 .8rem; color: var(--muted); font-size: .85rem; }
+#ask-input {
+  width: 100%; box-sizing: border-box;
+  font: inherit; font-size: .95rem;
+  padding: .5rem .6rem; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--fg);
+}
+#ask-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ask-error { min-height: 1.2em; margin-top: .5rem; color: var(--danger); font-size: .85rem; }
+.ask-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .6rem; }
+.ask-actions button {
+  font: inherit; font-size: .85rem; padding: .4rem .9rem; border-radius: 6px; cursor: pointer;
+}
+.ask-actions button:disabled { opacity: .6; cursor: default; }
+#ask-cancel { border: 1px solid var(--border); background: transparent; color: var(--fg); }
+#ask-cancel:hover { border-color: var(--accent); }
+#ask-cancel[hidden] { display: none; }
+#ask-submit { border: 1px solid var(--accent); background: var(--accent); color: var(--bg); }
+#ask-submit:hover { opacity: .9; }
+
 h1, h2, h3, h4 { line-height: 1.25; margin: 1.6rem 0 .75rem; font-weight: 600; }
 #content h1 { font-size: 1.75rem; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
 #content h2 { font-size: 1.35rem; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
@@ -267,8 +313,24 @@ img { max-width: 100%; }
 <header>
   <h1>viewmd</h1>
   <span class="meta" id="meta">Loading…</span>
+  <button type="button" id="ask-again-btn" hidden title="Change the base folder or GitHub URL">Change base…</button>
 </header>
 <div id="err" role="alert"></div>
+<div id="ask-overlay" hidden>
+  <div id="ask-dialog" role="dialog" aria-modal="true" aria-labelledby="ask-title">
+    <h2 id="ask-title">Base folder or GitHub URL</h2>
+    <p class="ask-hint" id="ask-hint"></p>
+    <form id="ask-form">
+      <input id="ask-input" type="text" autocomplete="off" spellcheck="false"
+             placeholder=". or https://github.com/OWNER/REPO">
+      <div class="ask-error" id="ask-error"></div>
+      <div class="ask-actions">
+        <button type="button" id="ask-cancel">Cancel</button>
+        <button type="submit" id="ask-submit">Set folder</button>
+      </div>
+    </form>
+  </div>
+</div>
 <div id="layout">
   <nav id="sidebar" aria-label="Markdown files">
     <h2>Files</h2>
@@ -935,12 +997,95 @@ img { max-width: 100%; }
     });
   }
 
+  // ── ask (base folder / GitHub URL) ─────────────────────
+  // Fed by --ask: a fresh server that deferred picking its trust boundary to
+  // this page (see viewServer.bootstrap in server.go) shows this modal right
+  // away, with nothing yet to cancel back to. From then on the same modal is
+  // available from the header button for as long as this instance was
+  // started with --ask (cfg.ask), but every pick after the first is bounded
+  // by startRoot exactly like the sidebar's "set as base" icons — only that
+  // very first pick, before startRoot exists, is unbounded.
+  var askOverlay = document.getElementById("ask-overlay");
+  var askForm = document.getElementById("ask-form");
+  var askInput = document.getElementById("ask-input");
+  var askHint = document.getElementById("ask-hint");
+  var askErrorBox = document.getElementById("ask-error");
+  var askCancelBtn = document.getElementById("ask-cancel");
+  var askSubmitBtn = document.getElementById("ask-submit");
+  var askAgainBtn = document.getElementById("ask-again-btn");
+  var askMandatory = false;
+
+  function openAsk(value, mandatory) {
+    askMandatory = !!mandatory;
+    askInput.value = value || "";
+    askErrorBox.textContent = "";
+    askHint.textContent = askMandatory
+      ? "viewmd needs somewhere to start. Enter a local folder or a GitHub URL, or accept the default."
+      : "Enter a local folder or a GitHub URL. It has to stay within " + startFolder + ".";
+    askCancelBtn.hidden = askMandatory;
+    askOverlay.hidden = false;
+    askInput.focus();
+    askInput.select();
+  }
+
+  function closeAsk() {
+    if (askMandatory) return; // nothing to fall back to yet
+    askOverlay.hidden = true;
+  }
+
+  askCancelBtn.addEventListener("click", closeAsk);
+  askOverlay.addEventListener("click", function (e) {
+    if (e.target === askOverlay) closeAsk();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !askOverlay.hidden) closeAsk();
+  });
+  askAgainBtn.addEventListener("click", function () { openAsk(currentFolder, false); });
+
+  askForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var value = askInput.value.trim();
+    if (!value) {
+      askErrorBox.textContent = "Enter a folder or a GitHub URL.";
+      return;
+    }
+    askSubmitBtn.disabled = true;
+    askCancelBtn.disabled = true;
+    fetch("/api/folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder: value })
+    }).then(function (r) {
+      return r.text().then(function (t) {
+        if (!r.ok) throw new Error(t || r.statusText);
+        return JSON.parse(t);
+      });
+    }).then(function (cfg) {
+      askSubmitBtn.disabled = false;
+      askCancelBtn.disabled = false;
+      askOverlay.hidden = true;
+      if (cfg.ask) askAgainBtn.hidden = false;
+      resetView();
+      return loadTreeAndOpen(cfg, cfg.initialMd || null);
+    }).catch(function (e) {
+      askSubmitBtn.disabled = false;
+      askCancelBtn.disabled = false;
+      askErrorBox.textContent = e && e.message ? e.message : String(e);
+    });
+  });
+
   function boot() {
     if (typeof marked === "undefined") {
       showError("Markdown library failed to load.");
       return;
     }
     fetch("/api/config").then(function (r) { return r.json(); }).then(function (cfg) {
+      if (cfg.ask) askAgainBtn.hidden = false;
+      if (!cfg.configured) {
+        placeholder.textContent = "Choose a base folder to get started.";
+        openAsk(cfg.askDefault || ".", true);
+        return;
+      }
       var want = null;
       try {
         var q = new URL(location.href).searchParams.get("md");
