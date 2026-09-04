@@ -5,6 +5,7 @@ package main
 
 import (
 	"net"
+	"path/filepath"
 	"strconv"
 	"testing"
 )
@@ -84,8 +85,12 @@ func TestResolveLauncherOutput(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// filepath.Dir (inside resolveLauncherOutput) normalizes to the OS-native
+			// separator, so a Unix-style want like "/tmp/out" needs the actual dir
+			// converted back to slash form before comparing — same convention as
+			// daemon_test.go / server_test.go elsewhere in this package.
 			dir, name := resolveLauncherOutput(tt.output, tt.root)
-			if dir != tt.wantDir || name != tt.want {
+			if filepath.ToSlash(dir) != tt.wantDir || name != tt.want {
 				t.Errorf("resolveLauncherOutput(%q, %q) = (%q, %q), want (%q, %q)",
 					tt.output, tt.root, dir, name, tt.wantDir, tt.want)
 			}
