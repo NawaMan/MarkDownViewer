@@ -45,7 +45,7 @@ func run(args []string) int {
 	var command, positionalFolder string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
-		case "version", "stop", "status":
+		case "version", "stop", "status", "create-launcher":
 			command = args[0]
 		default:
 			positionalFolder = args[0]
@@ -57,6 +57,11 @@ func run(args []string) int {
 	if command == "version" {
 		fmt.Println(version)
 		return 0
+	}
+	// create-launcher has its own flag set (--icon, --output) and never binds
+	// a port, so it is dispatched before the main flag set exists.
+	if command == "create-launcher" {
+		return runCreateLauncher(args)
 	}
 
 	flags := flag.NewFlagSet("viewmd", flag.ContinueOnError)
@@ -93,6 +98,8 @@ Commands:
   version            Print version and exit (same as --version)
   stop               Stop the background instance for --port (same as --stop)
   status             Report whether a background instance is running
+  create-launcher    Create a double-clickable launcher for a folder
+                     (EXPERIMENTAL; viewmd create-launcher --help for its own flags)
 
 Flags:
   --folder DIR       Root directory to scan, or a GitHub URL such as
@@ -131,6 +138,7 @@ Examples:
   viewmd --folder https://github.com/OWNER/REPO --github-token ghp_xxx
   viewmd status
   viewmd stop --port 9000
+  viewmd create-launcher --folder ~/docs --md README.md --icon ~/docs/icon.png
   viewmd ./other-docs                    # if an instance is up on --port,
                                           # retarget it instead of failing to bind
 `)

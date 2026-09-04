@@ -29,6 +29,11 @@ Browse a folder of Markdown files in your browser — single Go binary, embedded
   `--github-token` (or `$GITHUB_TOKEN`) to raise the API's 60/hour
   unauthenticated rate limit or reach a private repo
 - **Daemon mode**: `--daemon` / `--status` / `--stop`, with graceful shutdown
+- **`create-launcher`** *(experimental)*: a double-clickable launcher
+  (`.desktop` / `.app` / `.lnk`) that opens a specific folder, with a custom
+  icon if you give it one — whether double-click actually runs it depends on
+  your desktop environment and has not been verified everywhere (see
+  [Creating a desktop launcher](#creating-a-desktop-launcher-experimental))
 - Optional **CodingBooth** integration: `--expose` calls `booth--expose` when available
 
 ## Quick start
@@ -112,6 +117,8 @@ Commands:
   version            Print version and exit (same as --version)
   stop               Stop the background instance for --port (same as --stop)
   status             Report whether a background instance is running
+  create-launcher    Create a double-clickable launcher for a folder
+                     (EXPERIMENTAL; viewmd create-launcher --help for its own flags)
 
 Flags:
   --folder DIR       Root directory to scan, or a GitHub URL such as
@@ -208,6 +215,69 @@ A headless server, a container and an SSH session have no browser to open, and
 that is not an error: viewmd warns, prints the URL, and goes on serving. Pass
 `--server-only` where that warning is just noise — CI, a container, a service
 unit — and nothing is launched at all.
+
+## Creating a desktop launcher (experimental)
+
+**Experimental**: creating the launcher file always works, but whether
+double-clicking it actually runs viewmd depends on your desktop
+environment/file manager's own trust and MIME handling, which varies by
+platform, distro and version and has not been verified everywhere — on
+Linux in particular, a fresh `.desktop` file can be treated as untrusted (it
+opens as text, or a right-click "Run as a Program" just flashes a window and
+exits) until the file manager is told to trust it, and the exact mechanism
+for that differs by desktop environment. Treat this feature as a starting
+point, not a guarantee.
+
+`viewmd create-launcher` writes a double-clickable launcher that opens one
+specific folder (and, optionally, one specific Markdown file) with no command
+to type — a shortcut for a teammate, a demo folder, or docs you keep coming
+back to:
+
+```bash
+viewmd create-launcher --folder ~/docs --md README.md --icon ~/docs/icon.png
+```
+
+| Platform | Creates |
+| --- | --- |
+| Linux, BSD | a `.desktop` file |
+| macOS | a `.app` bundle |
+| Windows | a `.lnk` shortcut |
+
+By default the launcher is named after the target (the folder's own name, or
+the repo name for a GitHub URL) and written to the current directory;
+`--output PATH` picks a different name and/or location — any `.desktop`,
+`.app` or `.lnk` extension typed there is stripped and replaced with the one
+the current platform actually needs.
+
+`--icon` takes a `.png` on every platform and converts it on the fly into the
+platform's native icon container — `.ico` on Windows, `.icns` on macOS — no
+image editor required. A platform-native icon (`.ico` on Windows, `.icns` on
+macOS) is also accepted and used as-is. A square image at least 256×256 gives
+the sharpest result; anything smaller is scaled up and looks soft. On Linux,
+the icon is referenced by its own file path rather than copied in, so keep it
+where it is.
+
+The launcher always runs the exact `viewmd` binary that created it, from
+wherever that binary happens to live — moving or deleting it breaks every
+launcher made from it, the same as any other shortcut to a program. It does
+not bake in `--port`, `--daemon` or a GitHub token: launched plainly, it opens
+on the default port, and a GitHub-rooted launcher for a private repo still
+needs `$GITHUB_TOKEN`/`$GH_TOKEN` set in whatever environment runs it.
+
+Copying a macOS `.app` to another machine (AirDrop, a zip, cloud sync) can
+pick up a quarantine flag that makes Gatekeeper block the first launch —
+right-click ▸ Open once to clear it, same as any unsigned app from outside the
+App Store; a `.app` that never leaves the machine it was created on does not
+hit this.
+
+On GNOME, `create-launcher` best-effort marks the `.desktop` file as a
+trusted launcher (the same `metadata::trusted` flag "Allow Launching" in the
+right-click menu sets) so double-click has a chance of working without that
+extra step. This is not guaranteed: it is silently skipped wherever `gio` (or
+its GNOME metadata backend) is not on hand, and even where it succeeds, GNOME
+versions and file-manager behavior vary enough that double-click may still
+not run it. If it does not, try the file manager's own "Allow Launching" /
+"Properties → Permissions → Allow executing as program" option by hand.
 
 ## Changing the base folder while it's running
 
