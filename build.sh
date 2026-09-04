@@ -7,8 +7,13 @@ cd "$ROOT"
 
 # This project builds inside a CodingBooth container (see AGENTS.md) — the host
 # has no guaranteed Go toolchain. If we're not already inside one, hop in via
-# ./booth instead of failing on a missing `go`.
-if [[ ! -d /opt/codingbooth && -z "${CB_CONTAINER_NAME:-}" ]]; then
+# ./booth instead of failing on a missing `go`. GitHub Actions is the one
+# exception: its own workflow already pins a Go version via actions/setup-go
+# and go.mod before calling this script, which is the same reproducibility
+# guarantee the booth exists to provide on an arbitrary host — hopping in
+# there would only add a Docker/CodingBooth-CLI dependency the runner may not
+# have primed, for no benefit.
+if [[ ! -d /opt/codingbooth && -z "${CB_CONTAINER_NAME:-}" && -z "${GITHUB_ACTIONS:-}" ]]; then
   if [[ ! -x ./booth ]]; then
     echo "build.sh: this project builds inside a CodingBooth container, but ./booth is missing or not executable here." >&2
     echo "  See AGENTS.md for details, or get CodingBooth: https://codingbooth.io" >&2
