@@ -3,7 +3,29 @@
 
 package main
 
-import "testing"
+import (
+	"net"
+	"strconv"
+	"testing"
+)
+
+// pickFreePort exists specifically so a launcher never fights another viewmd
+// instance (or another launcher) for the default 8765 — it has to return a
+// port nothing is already listening on.
+func TestPickFreePort(t *testing.T) {
+	port, err := pickFreePort()
+	if err != nil {
+		t.Fatalf("pickFreePort: %v", err)
+	}
+	if port <= 0 || port > 65535 {
+		t.Fatalf("pickFreePort = %d, want a valid TCP port", port)
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("port %d returned by pickFreePort is not actually free: %v", port, err)
+	}
+	ln.Close()
+}
 
 func TestSanitizeFileName(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{

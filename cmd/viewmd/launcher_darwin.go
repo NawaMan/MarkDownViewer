@@ -10,15 +10,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // createLauncher writes a minimal .app bundle: a shell script under
 // Contents/MacOS that execs the viewmd binary that created it with
-// --folder/--md baked in, plus an Info.plist and (when an icon was given) a
-// Contents/Resources/icon.icns. Finder launches it like any other app — no
-// Terminal window, no code signing needed for a bundle that never leaves the
-// machine it was built on.
+// --folder/--md/--port baked in, plus an Info.plist and (when an icon was
+// given) a Contents/Resources/icon.icns. Finder launches it like any other
+// app — no Terminal window, no code signing needed for a bundle that never
+// leaves the machine it was built on.
 func createLauncher(cfg launcherConfig) (string, error) {
 	dir := cfg.OutputDir
 	if dir == "" {
@@ -39,7 +40,11 @@ func createLauncher(cfg launcherConfig) (string, error) {
 		return "", err
 	}
 
-	args := []string{shSingleQuote(cfg.ViewmdPath), "--folder", shSingleQuote(cfg.Folder)}
+	args := []string{
+		shSingleQuote(cfg.ViewmdPath),
+		"--folder", shSingleQuote(cfg.Folder),
+		"--port", strconv.Itoa(cfg.Port),
+	}
 	if cfg.InitialMd != "" {
 		args = append(args, "--md", shSingleQuote(cfg.InitialMd))
 	}

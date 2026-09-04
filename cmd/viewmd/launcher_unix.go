@@ -10,14 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // createLauncher writes a freedesktop .desktop file that runs the viewmd
-// binary that created it with --folder/--md baked in. Icon references the
-// given icon file by its own absolute path — the desktop entry spec's Icon
-// key accepts one directly, and most desktop environments load PNG or SVG
-// icons from an arbitrary path with no conversion needed (.ico/.icns are
+// binary that created it with --folder/--md/--port baked in. Icon references
+// the given icon file by its own absolute path — the desktop entry spec's
+// Icon key accepts one directly, and most desktop environments load PNG or
+// SVG icons from an arbitrary path with no conversion needed (.ico/.icns are
 // passed through the same way, but support for those varies by icon theme
 // engine).
 func createLauncher(cfg launcherConfig) (string, error) {
@@ -33,7 +34,11 @@ func createLauncher(cfg launcherConfig) (string, error) {
 		return "", fmt.Errorf("create-launcher: %w", err)
 	}
 
-	execArgs := []string{quoteDesktopExecArg(cfg.ViewmdPath), "--folder", quoteDesktopExecArg(cfg.Folder)}
+	execArgs := []string{
+		quoteDesktopExecArg(cfg.ViewmdPath),
+		"--folder", quoteDesktopExecArg(cfg.Folder),
+		"--port", strconv.Itoa(cfg.Port),
+	}
 	if cfg.InitialMd != "" {
 		execArgs = append(execArgs, "--md", quoteDesktopExecArg(cfg.InitialMd))
 	}
@@ -62,20 +67,25 @@ Categories=Utility;
 }
 
 // markDesktopFileTrusted best-effort marks path as a trusted launcher via
-// GNOME/Nautilus's own metadata channel. Since GNOME 3.36, Nautilus treats a
-// freshly written .desktop file as untrusted and opens it as plain text on
-// double-click instead of running it — the executable bit alone is no longer
-// enough — until this same "Allow Launching" attribute is set, normally done
-// by hand from the file's right-click menu. Every non-GNOME desktop, and a
-// gio build without the gvfs metadata backend, simply rejects the attribute;
-// that failure is silently ignored, since not being able to set a
-// GNOME-specific flag is not a failure worth reporting for a feature meant
-// to work the same way on every desktop environment. PATH is tried first, as
-// is normal, then two common absolute paths in case something earlier on
-// PATH shadows the system gio with a build that lacks gvfs support.
+// GNOME's own metadata channel. Since GNOME 3.36, both Nautilus and the
+// Desktop Icons NG (ding) extension that actually renders ~/Desktop icons on
+// modern Ubuntu/GNOME treat a freshly written .desktop file as untrusted —
+// the executable bit alone is no longer enough — until this same "Allow
+// Launching" attribute is set, normally done by hand from the file's
+// right-click menu. The value must be the literal string "true": ding reads
+// it back with g_file_info_get_attribute_as_string and compares it exactly
+// against "true" (see fileItem.js in ding@rastersoft.com), so anything else
+// — including gio's own "yes"/"no" rendering of a real boolean attribute —
+// is silently treated as untrusted. Every non-GNOME desktop, and a gio build
+// without the gvfs metadata backend, simply rejects the attribute; that
+// failure is silently ignored, since not being able to set a GNOME-specific
+// flag is not a failure worth reporting for a feature meant to work the same
+// way on every desktop environment. PATH is tried first, as is normal, then
+// two common absolute paths in case something earlier on PATH shadows the
+// system gio with a build that lacks gvfs support.
 func markDesktopFileTrusted(path string) {
 	for _, bin := range []string{"gio", "/usr/bin/gio", "/bin/gio"} {
-		if exec.Command(bin, "set", path, "metadata::trusted", "yes").Run() == nil {
+		if exec.Command(bin, "set", path, "metadata::trusted", "true").Run() == nil {
 			return
 		}
 	}

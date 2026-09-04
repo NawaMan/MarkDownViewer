@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ type launcherConfig struct {
 	ViewmdPath string // absolute path to the viewmd binary the launcher should run
 	Folder     string // baked --folder value: an absolute local path or a canonical GitHub URL
 	InitialMd  string // baked --md value, "" if none
+	Port       int    // baked --port value, picked once at creation time
 
 	IconPath string // original --icon path, absolute; "" if no icon was given
 	IconData []byte // --icon file contents; nil if no icon was given
@@ -75,11 +77,16 @@ The launcher always runs whichever viewmd binary created it, from wherever
 that binary happens to live — move or remove it and the launcher stops
 working, the same as any other shortcut to a program.
 
+A free port is picked once, right now, and baked in as --port, rather than
+using viewmd's 8765 default — so this launcher won't refuse to start just
+because something else (another launcher, a manually run viewmd) already
+has the default port.
+
 EXPERIMENTAL: whether double-clicking the result actually launches it
 depends on the desktop environment/file manager's own trust and MIME
-handling, which varies by distro and version and has not been verified
-everywhere. Report what you saw (which platform/DE, what happened) so this
-can be hardened.
+handling, which varies by distro and version. Verified end-to-end on
+Ubuntu/GNOME (Desktop Icons NG); macOS and Windows are untested. Report what
+you saw (which platform/DE, what happened) so this can be hardened further.
 `)
 	}
 
@@ -129,10 +136,17 @@ can be hardened.
 
 	outDir, name := resolveLauncherOutput(*output, rootAbs)
 
+	port, err := pickFreePort()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error: could not pick a port for the launcher:", err)
+		return 1
+	}
+
 	cfg := launcherConfig{
 		ViewmdPath: viewmdPath,
 		Folder:     rootAbs,
 		InitialMd:  initial,
+		Port:       port,
 		IconPath:   iconAbsPath,
 		IconData:   iconData,
 		IconExt:    iconExt,
@@ -150,10 +164,30 @@ can be hardened.
 	if initial != "" {
 		fmt.Printf("  initial file: %s\n", initial)
 	}
+	fmt.Printf("  port: %d (picked now and baked in, so this launcher won't collide with\n", port)
+	fmt.Printf("         another instance already using the default port)\n")
 	fmt.Fprintln(os.Stderr, "  (EXPERIMENTAL: double-click launch behavior depends on your desktop")
 	fmt.Fprintln(os.Stderr, "   environment/file manager and has not been verified everywhere — if it")
 	fmt.Fprintln(os.Stderr, "   doesn't run, that's a known gap, not something you're doing wrong.)")
 	return 0
+}
+
+// pickFreePort asks the OS for an unused TCP port by binding to port 0 and
+// reading back what it assigned, then releases it immediately. The port is
+// baked into the launcher as a fixed --port rather than picked fresh on every
+// launch — a static shortcut has no way to run logic at launch time — so a
+// launcher never collides with viewmd's own 8765 default (or with another
+// launcher created the same way), even when something is already listening
+// there. It can, in principle, still race another process that grabs the
+// same port between this check and the eventual launch; that risk is small
+// and, unlike the collision this replaces, is not the common case.
+func pickFreePort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
 // resolveLauncherOutput splits --output into a directory and a sanitized base

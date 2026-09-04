@@ -221,11 +221,8 @@ unit — and nothing is launched at all.
 **Experimental**: creating the launcher file always works, but whether
 double-clicking it actually runs viewmd depends on your desktop
 environment/file manager's own trust and MIME handling, which varies by
-platform, distro and version and has not been verified everywhere — on
-Linux in particular, a fresh `.desktop` file can be treated as untrusted (it
-opens as text, or a right-click "Run as a Program" just flashes a window and
-exits) until the file manager is told to trust it, and the exact mechanism
-for that differs by desktop environment. Treat this feature as a starting
+platform, distro and version. Verified end-to-end on Ubuntu/GNOME (Desktop
+Icons NG); macOS and Windows are untested. Treat this feature as a starting
 point, not a guarantee.
 
 `viewmd create-launcher` writes a double-clickable launcher that opens one
@@ -259,10 +256,13 @@ where it is.
 
 The launcher always runs the exact `viewmd` binary that created it, from
 wherever that binary happens to live — moving or deleting it breaks every
-launcher made from it, the same as any other shortcut to a program. It does
-not bake in `--port`, `--daemon` or a GitHub token: launched plainly, it opens
-on the default port, and a GitHub-rooted launcher for a private repo still
-needs `$GITHUB_TOKEN`/`$GH_TOKEN` set in whatever environment runs it.
+launcher made from it, the same as any other shortcut to a program. A free
+port is picked once, at creation time, and baked in as `--port`, so a
+launcher never fails to start just because something else — another
+launcher, a manually run `viewmd` — already has the 8765 default. It does not
+bake in `--daemon` or a GitHub token: a GitHub-rooted launcher for a private
+repo still needs `$GITHUB_TOKEN`/`$GH_TOKEN` set in whatever environment runs
+it.
 
 Copying a macOS `.app` to another machine (AirDrop, a zip, cloud sync) can
 pick up a quarantine flag that makes Gatekeeper block the first launch —
@@ -270,14 +270,18 @@ right-click ▸ Open once to clear it, same as any unsigned app from outside the
 App Store; a `.app` that never leaves the machine it was created on does not
 hit this.
 
-On GNOME, `create-launcher` best-effort marks the `.desktop` file as a
-trusted launcher (the same `metadata::trusted` flag "Allow Launching" in the
-right-click menu sets) so double-click has a chance of working without that
-extra step. This is not guaranteed: it is silently skipped wherever `gio` (or
-its GNOME metadata backend) is not on hand, and even where it succeeds, GNOME
-versions and file-manager behavior vary enough that double-click may still
-not run it. If it does not, try the file manager's own "Allow Launching" /
-"Properties → Permissions → Allow executing as program" option by hand.
+On GNOME, `create-launcher` marks the `.desktop` file as a trusted launcher
+(the same `metadata::trusted` flag "Allow Launching" in the right-click menu
+sets, and the same one Desktop Icons NG — the extension that actually draws
+`~/Desktop` icons on modern Ubuntu/GNOME — checks before it will run
+anything there) so double-click works without that extra step. This is
+best-effort: it is silently skipped wherever `gio`, or its GNOME metadata
+backend, is not on hand — every non-GNOME desktop, in particular — where it
+has no effect one way or the other. If double-click still does not work, try
+the file manager's own "Allow Launching" / "Properties → Permissions → Allow
+executing as program" option by hand, and check that nothing else already
+owns the launcher's port (`viewmd status --port N`, or just look at what the
+launcher's `Exec=`/`Arguments`/script actually runs).
 
 ## Changing the base folder while it's running
 

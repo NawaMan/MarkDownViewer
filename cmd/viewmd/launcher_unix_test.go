@@ -18,6 +18,7 @@ func TestCreateLauncherWritesDesktopFile(t *testing.T) {
 		ViewmdPath: "/opt/viewmd/viewmd",
 		Folder:     "/home/nawa/docs",
 		InitialMd:  "README.md",
+		Port:       54321,
 		IconPath:   "/home/nawa/docs/icon.png",
 		OutputDir:  dir,
 		Name:       "Docs Launcher",
@@ -48,7 +49,7 @@ func TestCreateLauncherWritesDesktopFile(t *testing.T) {
 		"[Desktop Entry]",
 		"Type=Application",
 		"Name=Docs Launcher",
-		"Exec=/opt/viewmd/viewmd --folder /home/nawa/docs --md README.md",
+		"Exec=/opt/viewmd/viewmd --folder /home/nawa/docs --port 54321 --md README.md",
 		"Icon=/home/nawa/docs/icon.png",
 		"Terminal=false",
 	} {

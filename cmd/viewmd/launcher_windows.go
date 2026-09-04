@@ -10,16 +10,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // createLauncher writes a .lnk shortcut targeting the viewmd binary that
-// created it, with --folder/--md baked into its Arguments. There is no pure
-// Go way to write a .lnk without either a third-party COM binding or hand-
-// rolling the MS-SHLLINK binary format, so this shells out to PowerShell's
-// built-in WScript.Shell COM object — the same approach Windows' own scripting
-// documentation recommends, and it needs nothing beyond what every Windows
-// install already has.
+// created it, with --folder/--md/--port baked into its Arguments. There is no
+// pure Go way to write a .lnk without either a third-party COM binding or
+// hand-rolling the MS-SHLLINK binary format, so this shells out to
+// PowerShell's built-in WScript.Shell COM object — the same approach
+// Windows' own scripting documentation recommends, and it needs nothing
+// beyond what every Windows install already has.
 func createLauncher(cfg launcherConfig) (string, error) {
 	dir := cfg.OutputDir
 	if dir == "" {
@@ -38,7 +39,7 @@ func createLauncher(cfg launcherConfig) (string, error) {
 		return "", err
 	}
 
-	args := []string{"--folder", cfg.Folder}
+	args := []string{"--folder", cfg.Folder, "--port", strconv.Itoa(cfg.Port)}
 	if cfg.InitialMd != "" {
 		args = append(args, "--md", cfg.InitialMd)
 	}
