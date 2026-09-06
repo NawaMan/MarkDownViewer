@@ -23,6 +23,9 @@ type serverConfig struct {
 	InitialMd   string `json:"initialMd,omitempty"`
 	Port        int    `json:"port"`
 	StartFolder string `json:"startFolder"`
+	// Version is the running viewmd build's version (see main.go), shown next
+	// to the "viewmd" title in the header.
+	Version string `json:"version"`
 	// Configured is false only for a server that deferred picking its start
 	// folder to the browser (--ask with a browser to ask in) and has not
 	// received its first /api/folder pick yet. Every other server is always
@@ -138,6 +141,7 @@ func (s *viewServer) configSnapshot() serverConfig {
 		Folder:      filepath.ToSlash(s.root),
 		InitialMd:   s.initialMd,
 		Port:        s.port,
+		Version:     version,
 		StartFolder: filepath.ToSlash(s.startRoot),
 		Configured:  s.startRoot != "",
 		Ask:         s.askMode,

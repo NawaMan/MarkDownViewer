@@ -35,6 +35,7 @@ header {
   background: color-mix(in srgb, var(--bg) 92%, transparent);
 }
 header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+header .version { color: var(--muted); font-size: .75rem; font-weight: 400; }
 header .meta { color: var(--muted); font-size: .85rem; flex: 1; min-width: 8rem;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 header .meta strong { color: var(--fg); }
@@ -311,7 +312,7 @@ img { max-width: 100%; }
 </head>
 <body>
 <header>
-  <h1>viewmd</h1>
+  <h1>viewmd <span class="version" id="version"></span></h1>
   <span class="meta" id="meta">Loading…</span>
   <button type="button" id="ask-again-btn" hidden title="Change the base folder or GitHub URL">Change base…</button>
 </header>
@@ -352,6 +353,7 @@ img { max-width: 100%; }
   var content = document.getElementById("content");
   var placeholder = document.getElementById("placeholder");
   var meta = document.getElementById("meta");
+  var versionEl = document.getElementById("version");
   var errBox = document.getElementById("err");
   var activePath = null;
 
@@ -1080,6 +1082,7 @@ img { max-width: 100%; }
       return;
     }
     fetch("/api/config").then(function (r) { return r.json(); }).then(function (cfg) {
+      if (cfg.version) versionEl.textContent = "v" + cfg.version;
       if (cfg.ask) askAgainBtn.hidden = false;
       if (!cfg.configured) {
         placeholder.textContent = "Choose a base folder to get started.";
