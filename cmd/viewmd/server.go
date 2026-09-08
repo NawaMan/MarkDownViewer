@@ -155,6 +155,7 @@ func (s *viewServer) routes() http.Handler {
 	mux.HandleFunc("/api/tree", s.handleTree)
 	mux.HandleFunc("/api/file", s.handleFile)
 	mux.HandleFunc("/api/asset", s.handleAsset)
+	mux.HandleFunc("/api/search", s.handleSearch)
 	mux.HandleFunc("/api/folder", s.handleSetFolder)
 	mux.Handle("/vendor/", http.FileServer(http.FS(s.web)))
 	mux.HandleFunc("/", s.handleIndex)
@@ -351,6 +352,68 @@ func (s *viewServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 	// ServeContent rather than io.Copy: it answers Range requests, which is
 	// what lets a browser seek in an embedded video.
 	http.ServeContent(w, r, filepath.Base(abs), st.ModTime(), f)
+}
+
+// handleSearch answers GET /api/search?q=... with every Markdown file under
+// the current root whose content contains q (case-insensitive substring),
+// each with a few matching lines. See searchFiles in search.go for the
+// scanning and result-shaping logic; this handler only supplies the file list
+// and the per-file reader for whichever kind of root is current, local or
+// GitHub.
+func (s *viewServer) handleSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireConfigured(w) {
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		writeJSON(w, searchResponse{Query: "", Files: []searchFileResult{}})
+		return
+	}
+	if len(query) > 200 {
+		http.Error(w, "query too long", http.StatusBadRequest)
+		return
+	}
+
+	root, _ := s.state()
+	if gh, ok := parseGitHubURL(root); ok {
+		tree, err := s.ghClient.Tree(gh.Owner, gh.Repo, gh.Ref, gh.Path)
+		if err != nil {
+			writeGitHubError(w, err)
+			return
+		}
+		paths := flattenTreePaths(tree)
+		limit := maxScanFilesGitHubAnon
+		if s.ghClient.token != "" {
+			limit = maxScanFilesGitHubAuthed
+		}
+		read := func(p string) ([]byte, error) {
+			repoPath, err := resolveGitHubPath(gh.Path, p)
+			if err != nil {
+				return nil, err
+			}
+			return s.ghClient.ReadFile(gh.Owner, gh.Repo, gh.Ref, repoPath)
+		}
+		writeJSON(w, searchFiles(paths, query, limit, read))
+		return
+	}
+
+	paths, err := listMarkdownPaths(root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	read := func(p string) ([]byte, error) {
+		abs, _, err := resolveUnderRoot(root, p)
+		if err != nil {
+			return nil, err
+		}
+		return os.ReadFile(abs)
+	}
+	writeJSON(w, searchFiles(paths, query, maxScanFilesLocal, read))
 }
 
 // handleSetFolder retargets the running server at a different directory

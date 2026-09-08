@@ -81,6 +81,39 @@ body.sidebar-resizing #content { pointer-events: none; }
   font-size: .7rem; text-transform: uppercase; letter-spacing: .04em;
   color: var(--muted); margin: .4rem .85rem; font-weight: 600;
 }
+/* ── sidebar search (file-name filter + content search) ─── */
+#sidebar-search { padding: 0 .85rem .5rem; }
+#sidebar-search-input {
+  width: 100%; box-sizing: border-box;
+  font: inherit; font-size: .82rem;
+  padding: .4rem .55rem; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--fg);
+}
+#sidebar-search-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+#tree-empty-msg {
+  margin: .3rem .85rem; color: var(--muted); font-size: .8rem;
+}
+#content-matches { border-top: 1px solid var(--border); margin-top: .4rem; padding-top: .2rem; }
+#content-matches[hidden] { display: none; }
+#content-matches-list { list-style: none; margin: 0; padding: 0 0 .5rem; }
+.match-file { margin: 0; }
+.match-file-btn {
+  display: block; width: 100%; text-align: left; border: 0; background: transparent;
+  color: var(--fg); font: inherit; font-size: .82rem; font-weight: 600;
+  padding: .3rem .85rem .1rem; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.match-file-btn:hover { color: var(--accent); }
+.match-snippets { list-style: none; margin: 0; padding: 0; }
+.match-snippet {
+  display: block; width: 100%; text-align: left; border: 0; background: transparent;
+  color: var(--muted); font: inherit; font-size: .78rem; line-height: 1.4;
+  padding: .12rem .85rem .12rem 1.2rem; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.match-snippet:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--fg); }
+.match-snippet mark, .match-file-btn mark { background: var(--sel); color: inherit; border-radius: 2px; }
+.match-more { margin: .2rem .85rem; color: var(--muted); font-size: .75rem; font-style: italic; }
 /* Depth is carried by a --depth custom property set in JS rather than by
    padding on the nested <ul>, so every row still spans the full sidebar
    width — the active background and accent bar stay flush with the left
@@ -209,6 +242,44 @@ body.sidebar-resizing #content { pointer-events: none; }
 #ask-again-btn:hover { border-color: var(--accent); color: var(--accent); }
 #ask-again-btn[hidden] { display: none; }
 
+#find-btn {
+  flex: 0 0 auto;
+  border: 1px solid var(--border); background: transparent; color: var(--fg);
+  font: inherit; font-size: .78rem; padding: .25rem .6rem; border-radius: 6px;
+  cursor: pointer;
+}
+#find-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Sits above the flowing content, near the top of the scrollable #main so it
+   stays in view without following the viewport past the sidebar (unlike a
+   position:fixed bar, which would also have to account for the mobile layout
+   stacking the sidebar above #main instead of beside it). */
+#find-bar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: .4rem;
+  width: min(22rem, 100%); margin: 0 0 .9rem;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: .4rem .5rem;
+  box-shadow: 0 4px 14px color-mix(in srgb, #000 12%, transparent);
+}
+#find-bar[hidden] { display: none; }
+#find-input {
+  flex: 1 1 auto; min-width: 0;
+  font: inherit; font-size: .88rem;
+  padding: .3rem .45rem; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--fg);
+}
+#find-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+#find-count { flex: 0 0 auto; color: var(--muted); font-size: .78rem; min-width: 3.2em; text-align: right; }
+#find-bar button {
+  flex: 0 0 auto; border: 1px solid var(--border); background: transparent; color: var(--fg);
+  font: inherit; font-size: .85rem; line-height: 1; padding: .3rem .5rem; border-radius: 6px;
+  cursor: pointer;
+}
+#find-bar button:hover { border-color: var(--accent); color: var(--accent); }
+#content mark.hit { background: var(--sel); color: inherit; border-radius: 2px; }
+#content mark.hit.current { background: var(--accent); color: var(--bg); }
+
 #ask-overlay {
   position: fixed; inset: 0; z-index: 20;
   background: color-mix(in srgb, #000 45%, transparent);
@@ -314,6 +385,7 @@ img { max-width: 100%; }
 <header>
   <h1>viewmd <span class="version" id="version"></span></h1>
   <span class="meta" id="meta">Loading…</span>
+  <button type="button" id="find-btn" title="Find in this file (Ctrl/Cmd+F)">Find</button>
   <button type="button" id="ask-again-btn" hidden title="Change the base folder or GitHub URL">Change base…</button>
 </header>
 <div id="err" role="alert"></div>
@@ -334,12 +406,29 @@ img { max-width: 100%; }
 </div>
 <div id="layout">
   <nav id="sidebar" aria-label="Markdown files">
+    <div id="sidebar-search">
+      <input type="search" id="sidebar-search-input" autocomplete="off" spellcheck="false"
+             placeholder="Search files and content…" aria-label="Search files and content">
+    </div>
     <h2>Files</h2>
     <ul id="tree"></ul>
+    <div id="tree-empty-msg" hidden>No file names match.</div>
+    <div id="content-matches" hidden>
+      <h2>Content matches</h2>
+      <ul id="content-matches-list"></ul>
+    </div>
   </nav>
   <div id="sidebar-resizer" role="separator" aria-orientation="vertical"
        aria-label="Resize file list" tabindex="0"></div>
   <main id="main">
+    <div id="find-bar" hidden role="search" aria-label="Find in file">
+      <input type="text" id="find-input" autocomplete="off" spellcheck="false"
+             placeholder="Find in file" aria-label="Find in file">
+      <span id="find-count" aria-live="polite"></span>
+      <button type="button" id="find-prev" title="Previous match (Shift+Enter)">‹</button>
+      <button type="button" id="find-next" title="Next match (Enter)">›</button>
+      <button type="button" id="find-close" title="Close (Esc)">×</button>
+    </div>
     <div class="empty" id="placeholder">Select a Markdown file from the list.</div>
     <div id="content" hidden></div>
   </main>
@@ -356,6 +445,39 @@ img { max-width: 100%; }
   var versionEl = document.getElementById("version");
   var errBox = document.getElementById("err");
   var activePath = null;
+
+  var findBtn = document.getElementById("find-btn");
+  var findBar = document.getElementById("find-bar");
+  var findInput = document.getElementById("find-input");
+  var findCountEl = document.getElementById("find-count");
+  var findPrevBtn = document.getElementById("find-prev");
+  var findNextBtn = document.getElementById("find-next");
+  var findCloseBtn = document.getElementById("find-close");
+
+  var sidebarSearchInput = document.getElementById("sidebar-search-input");
+  var treeEmptyMsg = document.getElementById("tree-empty-msg");
+  var contentMatchesBox = document.getElementById("content-matches");
+  var contentMatchesList = document.getElementById("content-matches-list");
+
+  // Delays fn until wait ms after the last call — used so a search-as-you-type
+  // box does not fire a network request (or a full tree re-filter) on every
+  // single keystroke.
+  function debounce(fn, wait) {
+    var timer;
+    return function () {
+      var args = arguments, ctx = this;
+      clearTimeout(timer);
+      timer = setTimeout(function () { fn.apply(ctx, args); }, wait);
+    };
+  }
+
+  function escapeHTML(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
 
   // Collapsed folders are stored by path, so the default (absent) state is
   // open and a tree that grows new folders shows them without a nudge.
@@ -465,6 +587,145 @@ img { max-width: 100%; }
       wrap.appendChild(btn);
     });
   }
+
+  // ── find in the currently rendered file ────────────────
+  // Wraps every case-insensitive occurrence of a query in the rendered
+  // #content in <mark class="hit">, tracks which one is "current", and can
+  // step between them. State lives entirely in the `matches` array of <mark>
+  // elements; `hardReset` (no DOM work) is what renderMarkdown calls on every
+  // fresh file load, since #content's old subtree — marks included — is
+  // already gone by the time it runs.
+  var finder = (function () {
+    var matches = [];
+    var current = -1;
+
+    function hardReset() {
+      matches = [];
+      current = -1;
+    }
+
+    // Undoes run()'s DOM surgery: unwraps every mark back into plain text and
+    // merges adjacent text nodes, so a fresh run() (or leaving find mode)
+    // starts from an #content indistinguishable from one that was never
+    // searched.
+    function clear() {
+      Array.prototype.forEach.call(content.querySelectorAll("mark.hit"), function (mark) {
+        var parent = mark.parentNode;
+        if (!parent) return;
+        parent.replaceChild(document.createTextNode(mark.textContent), mark);
+        parent.normalize();
+      });
+      hardReset();
+    }
+
+    function run(query) {
+      clear();
+      if (!query) return 0;
+      var lowerQuery = query.toLowerCase();
+      var walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, null);
+      var textNodes = [];
+      var node;
+      while ((node = walker.nextNode())) textNodes.push(node);
+
+      textNodes.forEach(function (textNode) {
+        var text = textNode.nodeValue;
+        var lowerText = text.toLowerCase();
+        var pos = lowerText.indexOf(lowerQuery);
+        if (pos < 0) return;
+        var frag = document.createDocumentFragment();
+        var lastEnd = 0;
+        while (pos >= 0) {
+          frag.appendChild(document.createTextNode(text.slice(lastEnd, pos)));
+          var mark = document.createElement("mark");
+          mark.className = "hit";
+          mark.textContent = text.slice(pos, pos + query.length);
+          frag.appendChild(mark);
+          matches.push(mark);
+          lastEnd = pos + query.length;
+          pos = lowerText.indexOf(lowerQuery, lastEnd);
+        }
+        frag.appendChild(document.createTextNode(text.slice(lastEnd)));
+        textNode.parentNode.replaceChild(frag, textNode);
+      });
+      return matches.length;
+    }
+
+    function goTo(i) {
+      if (!matches.length) return;
+      if (current >= 0 && matches[current]) matches[current].classList.remove("current");
+      current = ((i % matches.length) + matches.length) % matches.length;
+      var mark = matches[current];
+      mark.classList.add("current");
+      mark.scrollIntoView({ block: "center" });
+    }
+
+    return {
+      hardReset: hardReset,
+      clear: clear,
+      run: run,
+      goTo: goTo,
+      next: function () { goTo(current + 1); },
+      prev: function () { goTo(current - 1); },
+      count: function () { return matches.length; },
+      currentIndex: function () { return current; }
+    };
+  })();
+
+  function updateFindCount() {
+    if (!findInput.value) { findCountEl.textContent = ""; return; }
+    var n = finder.count();
+    findCountEl.textContent = n ? (finder.currentIndex() + 1) + " / " + n : "0 / 0";
+  }
+
+  function runFind() {
+    finder.run(findInput.value);
+    if (finder.count()) finder.goTo(0);
+    updateFindCount();
+  }
+
+  var debouncedRunFind = debounce(runFind, 120);
+
+  function openFindBar(prefill) {
+    findBar.hidden = false;
+    if (prefill !== undefined && prefill !== null) findInput.value = prefill;
+    findInput.focus();
+    findInput.select();
+    runFind();
+  }
+
+  function closeFindBar() {
+    findBar.hidden = true;
+    finder.clear();
+    findCountEl.textContent = "";
+  }
+
+  findInput.addEventListener("input", debouncedRunFind);
+  findInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (e.shiftKey) finder.prev(); else finder.next();
+      updateFindCount();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeFindBar();
+    }
+  });
+  findPrevBtn.addEventListener("click", function () { finder.prev(); updateFindCount(); findInput.focus(); });
+  findNextBtn.addEventListener("click", function () { finder.next(); updateFindCount(); findInput.focus(); });
+  findCloseBtn.addEventListener("click", closeFindBar);
+  findBtn.addEventListener("click", function () { openFindBar(); });
+
+  // Ctrl/Cmd+F opens the in-page find bar instead of the browser's own —
+  // #content is a single page's worth of rendered Markdown, so a scoped find
+  // with visible match highlighting and a running count serves a reader
+  // better here than the browser default would. Left alone while the ask
+  // modal is up, since that already owns a text input of its own.
+  document.addEventListener("keydown", function (e) {
+    if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "f") return;
+    if (!askOverlay.hidden) return;
+    e.preventDefault();
+    openFindBar();
+  });
 
   function jumpToHash(hash) {
     if (!hash) return;
@@ -586,6 +847,11 @@ img { max-width: 100%; }
       showError("Markdown library missing.");
       return;
     }
+    // The old #content subtree (and any <mark class="hit"> in it) is about to
+    // be thrown away, so the finder's bookkeeping needs no DOM cleanup here —
+    // just forgetting the stale mark references.
+    finder.hardReset();
+    if (!findBar.hidden) findBar.hidden = true;
     // Parsed into an inert document first: assigning the raw HTML straight to
     // content would start fetching every image at its unrebased path, so the
     // rewrite below would only ever be a correction after a wasted 404.
@@ -806,6 +1072,184 @@ img { max-width: 100%; }
     });
   }
 
+  // ── sidebar search (file-name filter + content search) ─
+  // One input drives two independent things: an instant, client-only filter
+  // over the tree already in the DOM (by file/folder name), and a debounced
+  // call to /api/search for files whose *content* matches, listed separately
+  // since a content hit's file name may not contain the query at all.
+
+  // Hides/reveals <li>s in a tree <ul> so only files (and folders that
+  // contain one) whose name matches query survive; a folder whose own name
+  // matches is shown in full, its own query passed down as "" so every
+  // descendant renders unfiltered. Temporarily expands (without touching
+  // collapsedDirs) any folder that needs to reveal a match; applyCollapsedState
+  // puts real collapse state back once the query is cleared. Returns whether
+  // anything in `ul` is visible.
+  function applyTreeFilter(ul, query) {
+    var anyVisible = false;
+    Array.prototype.forEach.call(ul.children, function (li) {
+      var first = li.firstElementChild;
+      if (!first) { li.hidden = false; return; }
+      if (first.classList.contains("file")) {
+        var match = !query || first.getAttribute("data-path").toLowerCase().indexOf(query) >= 0;
+        li.hidden = !match;
+        if (match) anyVisible = true;
+      } else if (first.classList.contains("up-row")) {
+        li.hidden = false; // navigational, not part of the filtered content
+      } else if (first.classList.contains("dir-row")) {
+        var label = first.querySelector(".dir-label");
+        var sub = li.children[1];
+        var dirMatch = !query || (label.getAttribute("data-dir") || "").toLowerCase().indexOf(query) >= 0;
+        var childVisible = sub ? applyTreeFilter(sub, dirMatch ? "" : query) : false;
+        var visible = dirMatch || childVisible;
+        li.hidden = !visible;
+        if (visible) {
+          anyVisible = true;
+          if (query && sub) setOpen(label, sub, true);
+        }
+      }
+    });
+    return anyVisible;
+  }
+
+  // Reapplies each folder's real (persisted) open/closed state, undoing the
+  // forced-open some folders got from applyTreeFilter while a query was active.
+  function applyCollapsedState(ul) {
+    Array.prototype.forEach.call(ul.children, function (li) {
+      var first = li.firstElementChild;
+      if (first && first.classList.contains("dir-row")) {
+        var label = first.querySelector(".dir-label");
+        var sub = li.children[1];
+        if (sub) {
+          setOpen(label, sub, !collapsedDirs[label.getAttribute("data-dir")]);
+          applyCollapsedState(sub);
+        }
+      }
+    });
+  }
+
+  function runTreeFilter(rawQuery) {
+    var query = rawQuery.trim().toLowerCase();
+    if (!query) {
+      applyTreeFilter(treeEl, "");
+      applyCollapsedState(treeEl);
+      treeEmptyMsg.hidden = true;
+      return;
+    }
+    var anyVisible = applyTreeFilter(treeEl, query);
+    treeEmptyMsg.hidden = anyVisible;
+  }
+
+  function highlightSnippet(text, query) {
+    var escaped = escapeHTML(text);
+    if (!query) return escaped;
+    var re = new RegExp("(" + escapeRegExp(query) + ")", "ig");
+    return escaped.replace(re, "<mark>$1</mark>");
+  }
+
+  // Opens a file a search result pointed at and jumps straight to the match,
+  // reusing the in-page find bar so the reader can also step through any
+  // other occurrences in the file from there.
+  function openSearchHit(path, query) {
+    loadFile(path, "", "push").then(function () {
+      openFindBar(query);
+    });
+  }
+
+  function clearContentMatches() {
+    contentMatchesBox.hidden = true;
+    contentMatchesList.innerHTML = "";
+  }
+
+  function renderContentMatches(query, data) {
+    contentMatchesList.innerHTML = "";
+    if (!data || !data.files || !data.files.length) {
+      contentMatchesBox.hidden = true;
+      return;
+    }
+    contentMatchesBox.hidden = false;
+    data.files.forEach(function (fileRes) {
+      var fileLi = document.createElement("li");
+      fileLi.className = "match-file";
+      var fileBtn = document.createElement("button");
+      fileBtn.type = "button";
+      fileBtn.className = "match-file-btn";
+      fileBtn.title = fileRes.path;
+      fileBtn.innerHTML = highlightSnippet(fileRes.path, query);
+      fileBtn.addEventListener("click", function () { openSearchHit(fileRes.path, query); });
+      fileLi.appendChild(fileBtn);
+
+      var snippetsUl = document.createElement("ul");
+      snippetsUl.className = "match-snippets";
+      fileRes.matches.forEach(function (m) {
+        var sLi = document.createElement("li");
+        var sBtn = document.createElement("button");
+        sBtn.type = "button";
+        sBtn.className = "match-snippet";
+        sBtn.title = m.text;
+        sBtn.innerHTML = highlightSnippet(m.text, query);
+        sBtn.addEventListener("click", function () { openSearchHit(fileRes.path, query); });
+        sLi.appendChild(sBtn);
+        snippetsUl.appendChild(sLi);
+      });
+      fileLi.appendChild(snippetsUl);
+      contentMatchesList.appendChild(fileLi);
+    });
+    if (data.truncated) {
+      var moreLi = document.createElement("li");
+      moreLi.className = "match-more";
+      moreLi.textContent = "More matches not shown.";
+      contentMatchesList.appendChild(moreLi);
+    }
+  }
+
+  var CONTENT_SEARCH_MIN_LEN = 2;
+  var contentSearchAbort = null;
+
+  var runContentSearch = debounce(function (query) {
+    if (contentSearchAbort) contentSearchAbort.abort();
+    if (query.length < CONTENT_SEARCH_MIN_LEN) {
+      clearContentMatches();
+      return;
+    }
+    var controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+    contentSearchAbort = controller;
+    fetch("/api/search?q=" + encodeURIComponent(query), controller ? { signal: controller.signal } : {})
+      .then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { throw new Error(t || r.statusText); });
+        return r.json();
+      })
+      .then(function (data) { renderContentMatches(query, data); })
+      .catch(function (e) {
+        if (e && e.name === "AbortError") return;
+        clearContentMatches();
+      });
+  }, 250);
+
+  // Clears the search box and everything it drove — called whenever the tree
+  // itself is about to be rebuilt (folder change), since a stale query would
+  // otherwise keep filtering/matching against a folder that is no longer current.
+  function resetSidebarSearch() {
+    sidebarSearchInput.value = "";
+    treeEmptyMsg.hidden = true;
+    clearContentMatches();
+    if (contentSearchAbort) contentSearchAbort.abort();
+  }
+
+  sidebarSearchInput.addEventListener("input", function () {
+    var raw = sidebarSearchInput.value;
+    runTreeFilter(raw);
+    runContentSearch(raw.trim());
+  });
+  sidebarSearchInput.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && sidebarSearchInput.value) {
+      e.preventDefault();
+      sidebarSearchInput.value = "";
+      runTreeFilter("");
+      clearContentMatches();
+    }
+  });
+
   // ── resizable sidebar ──────────────────────────────────
   var SIDEBAR_KEY = "viewmd.sidebarWidth";
   var sidebar = document.getElementById("sidebar");
@@ -977,6 +1421,7 @@ img { max-width: 100%; }
     currentFolder = cfg.folder || ".";
     if (cfg.startFolder) startFolder = cfg.startFolder;
     meta.textContent = "Folder: " + currentFolder;
+    resetSidebarSearch();
     return fetch("/api/tree").then(function (r) {
       if (!r.ok) throw new Error("tree " + r.status);
       return r.json();

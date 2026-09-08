@@ -171,6 +171,14 @@ func listMarkdownPaths(root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return flattenTreePaths(t), nil
+}
+
+// flattenTreePaths lists every file in t as a slash-separated path relative
+// to t's own root, depth-first in the same order the sidebar renders them.
+// Shared by listMarkdownPaths (a local buildTree) and search.go's GitHub path
+// (a githubClient.Tree result) since both produce the same treeNode shape.
+func flattenTreePaths(t treeNode) []string {
 	var out []string
 	var walk func(prefix string, n treeNode)
 	walk = func(prefix string, n treeNode) {
@@ -195,5 +203,5 @@ func listMarkdownPaths(root string) ([]string, error) {
 		}
 	}
 	walk("", t)
-	return out, nil
+	return out
 }

@@ -13,6 +13,11 @@ Browse a folder of Markdown files in your browser — single Go binary, embedded
   them, and links between Markdown files load in place (Back works)
 - Resizable sidebar (width remembered), horizontal scroll, **Shift+wheel** for sideways scroll
 - Copy button on every code block (falls back to a selection copy off localhost)
+- **Search**: the sidebar search box filters the file tree by name as you type
+  and lists files whose *content* matches with a snippet per hit — click one
+  to jump straight there. **Find** (or **Ctrl/Cmd+F**) searches within the
+  open file, highlighting every match with a running count and Enter/Shift+Enter
+  to step through them.
 - Open a default file with `--md`
 - **`--ask`**: prompt for the base folder or GitHub URL instead of requiring
   `--folder`/`DIR` up front — in the browser once it opens (a modal, prefilled
