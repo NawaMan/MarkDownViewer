@@ -3,7 +3,10 @@
 
 package main
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // searchMatch is one matching line inside a file: its 1-based line number and
 // a snippet of the line's text, cropped around the match when the line is
@@ -27,6 +30,13 @@ type searchResponse struct {
 	// scan, than this response includes — the client shows a hint rather than
 	// implying the listed files are the whole story.
 	Truncated bool `json:"truncated"`
+}
+
+// searchOptions toggles how query is interpreted. The zero value is the
+// original behavior: a case-insensitive substring search.
+type searchOptions struct {
+	CaseSensitive bool
+	Regex         bool
 }
 
 const (
@@ -54,17 +64,66 @@ const (
 	maxScanFilesGitHubAuthed = 300
 )
 
-// searchFiles runs a case-insensitive substring search for query across the
-// content of paths (relative, slash-separated, as returned by listMarkdownPaths
-// or flattenTreePaths), reading each file with read. It stops once scanLimit
+// lineMatcher finds the first match of a query within a line, returning its
+// byte range [start, end) and whether it matched at all.
+type lineMatcher func(line string) (start, end int, ok bool)
+
+// newLineMatcher builds a lineMatcher for query under opts. In regex mode,
+// query is compiled as a Go regular expression (RE2 syntax), case-insensitive
+// unless opts.CaseSensitive; a bad pattern is reported as an error rather than
+// silently matching nothing, so the caller can tell the requester what's
+// wrong. In plain mode it is always a valid matcher: a substring search,
+// case-insensitive unless opts.CaseSensitive.
+func newLineMatcher(query string, opts searchOptions) (lineMatcher, error) {
+	if opts.Regex {
+		pattern := query
+		if !opts.CaseSensitive {
+			pattern = "(?i)" + pattern
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, err
+		}
+		return func(line string) (int, int, bool) {
+			loc := re.FindStringIndex(line)
+			if loc == nil {
+				return 0, 0, false
+			}
+			return loc[0], loc[1], true
+		}, nil
+	}
+	needle := query
+	if !opts.CaseSensitive {
+		needle = strings.ToLower(needle)
+	}
+	return func(line string) (int, int, bool) {
+		hay := line
+		if !opts.CaseSensitive {
+			hay = strings.ToLower(hay)
+		}
+		idx := strings.Index(hay, needle)
+		if idx < 0 {
+			return 0, 0, false
+		}
+		return idx, idx + len(needle), true
+	}, nil
+}
+
+// searchFiles runs query (interpreted per opts) across the content of paths
+// (relative, slash-separated, as returned by listMarkdownPaths or
+// flattenTreePaths), reading each file with read. It stops once scanLimit
 // files have been read or maxSearchResultFiles matching files have been
 // found, whichever comes first; a read error for one file is treated as "no
 // match" rather than failing the whole search, since the file's set of
 // Markdown paths and its actual readability can briefly disagree (a race with
 // a delete, a GitHub blob past the point where fetchTree's cache went stale).
-func searchFiles(paths []string, query string, scanLimit int, read func(path string) ([]byte, error)) searchResponse {
+// An error is returned only when opts.Regex's query fails to compile.
+func searchFiles(paths []string, query string, opts searchOptions, scanLimit int, read func(path string) ([]byte, error)) (searchResponse, error) {
+	match, err := newLineMatcher(query, opts)
+	if err != nil {
+		return searchResponse{}, err
+	}
 	resp := searchResponse{Query: query, Files: []searchFileResult{}}
-	lowerQuery := strings.ToLower(query)
 	scanned := 0
 	for _, p := range paths {
 		if scanned >= scanLimit {
@@ -76,7 +135,7 @@ func searchFiles(paths []string, query string, scanLimit int, read func(path str
 		if err != nil {
 			continue
 		}
-		if r := searchFileContent(p, string(data), lowerQuery, query); r != nil {
+		if r := searchFileContent(p, string(data), match); r != nil {
 			resp.Files = append(resp.Files, *r)
 			if len(resp.Files) >= maxSearchResultFiles {
 				resp.Truncated = true
@@ -87,22 +146,20 @@ func searchFiles(paths []string, query string, scanLimit int, read func(path str
 	if scanned >= scanLimit && scanned < len(paths) {
 		resp.Truncated = true
 	}
-	return resp
+	return resp, nil
 }
 
-// searchFileContent scans content line by line for lowerQuery (content and
-// query already lowercased) and returns the file's result, or nil when it has
-// no matches. query (original case) is only used to size the highlighted span
-// in each snippet.
-func searchFileContent(relPath, content, lowerQuery, query string) *searchFileResult {
+// searchFileContent scans content line by line for match and returns the
+// file's result, or nil when it has no matches.
+func searchFileContent(relPath, content string, match lineMatcher) *searchFileResult {
 	var matches []searchMatch
 	lineNo := 0
 	for _, line := range strings.Split(content, "\n") {
 		lineNo++
-		if !strings.Contains(strings.ToLower(line), lowerQuery) {
+		if _, _, ok := match(line); !ok {
 			continue
 		}
-		matches = append(matches, searchMatch{Line: lineNo, Text: snippetAround(line, query)})
+		matches = append(matches, searchMatch{Line: lineNo, Text: snippetAround(line, match)})
 		if len(matches) >= maxMatchesPerFile {
 			break
 		}
@@ -114,39 +171,40 @@ func searchFileContent(relPath, content, lowerQuery, query string) *searchFileRe
 }
 
 // snippetAround trims line and, if it is long, crops it to a window of
-// snippetRadius runes on each side of query's first occurrence — long enough
-// to give context, short enough to fit a sidebar row. Rune-based throughout
-// so a multi-byte character never gets split across the crop boundary.
-func snippetAround(line, query string) string {
+// snippetRadius runes on each side of match's first occurrence in the trimmed
+// line — long enough to give context, short enough to fit a sidebar row.
+// Rune-based throughout so a multi-byte character never gets split across the
+// crop boundary.
+func snippetAround(line string, match lineMatcher) string {
 	trimmed := strings.TrimSpace(line)
 	runes := []rune(trimmed)
-	byteIdx := strings.Index(strings.ToLower(trimmed), strings.ToLower(query))
-	if byteIdx < 0 {
-		// Cannot happen for a line that matched, but a full-line fallback is
-		// harmless if it ever does.
+	start, end, ok := match(trimmed)
+	if !ok {
+		// Cannot happen for a line that matched before trimming, but a
+		// full-line fallback is harmless if it ever does.
 		if len(runes) > 2*snippetRadius {
 			return string(runes[:2*snippetRadius]) + "…"
 		}
 		return trimmed
 	}
-	runeIdx := len([]rune(trimmed[:byteIdx]))
-	queryRunes := len([]rune(query))
-	if len(runes) <= 2*snippetRadius+queryRunes {
+	runeIdx := len([]rune(trimmed[:start]))
+	matchRunes := len([]rune(trimmed[start:end]))
+	if len(runes) <= 2*snippetRadius+matchRunes {
 		return trimmed
 	}
-	start := runeIdx - snippetRadius
-	if start < 0 {
-		start = 0
+	rStart := runeIdx - snippetRadius
+	if rStart < 0 {
+		rStart = 0
 	}
-	end := runeIdx + queryRunes + snippetRadius
-	if end > len(runes) {
-		end = len(runes)
+	rEnd := runeIdx + matchRunes + snippetRadius
+	if rEnd > len(runes) {
+		rEnd = len(runes)
 	}
-	snippet := string(runes[start:end])
-	if start > 0 {
+	snippet := string(runes[rStart:rEnd])
+	if rStart > 0 {
 		snippet = "…" + snippet
 	}
-	if end < len(runes) {
+	if rEnd < len(runes) {
 		snippet += "…"
 	}
 	return snippet

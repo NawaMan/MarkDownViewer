@@ -7,20 +7,30 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+func mustMatcher(t *testing.T, query string, opts searchOptions) lineMatcher {
+	t.Helper()
+	m, err := newLineMatcher(query, opts)
+	if err != nil {
+		t.Fatalf("newLineMatcher(%q, %+v): %v", query, opts, err)
+	}
+	return m
+}
+
 func TestSnippetAround(t *testing.T) {
 	short := "  # Hello World  "
-	if got := snippetAround(short, "hello"); got != "# Hello World" {
+	if got := snippetAround(short, mustMatcher(t, "hello", searchOptions{})); got != "# Hello World" {
 		t.Fatalf("short snippet = %q", got)
 	}
 
 	long := strings.Repeat("a", 100) + "NEEDLE" + strings.Repeat("b", 100)
-	got := snippetAround(long, "needle")
+	got := snippetAround(long, mustMatcher(t, "needle", searchOptions{}))
 	if !strings.Contains(got, "NEEDLE") {
 		t.Fatalf("long snippet lost the match: %q", got)
 	}
@@ -41,7 +51,10 @@ func TestSearchFilesBasic(t *testing.T) {
 	paths := []string{"a.md", "b.md", "sub/c.md"}
 	read := func(p string) ([]byte, error) { return []byte(files[p]), nil }
 
-	resp := searchFiles(paths, "apple", 10, read)
+	resp, err := searchFiles(paths, "apple", searchOptions{}, 10, read)
+	if err != nil {
+		t.Fatalf("searchFiles: %v", err)
+	}
 	if resp.Truncated {
 		t.Fatalf("unexpected truncation: %+v", resp)
 	}
@@ -64,12 +77,51 @@ func TestSearchFilesBasic(t *testing.T) {
 	}
 }
 
+func TestSearchFilesCaseSensitive(t *testing.T) {
+	files := map[string]string{
+		"a.md": "apple\nAPPLE\n",
+	}
+	paths := []string{"a.md"}
+	read := func(p string) ([]byte, error) { return []byte(files[p]), nil }
+
+	resp, err := searchFiles(paths, "APPLE", searchOptions{CaseSensitive: true}, 10, read)
+	if err != nil {
+		t.Fatalf("searchFiles: %v", err)
+	}
+	if len(resp.Files) != 1 || len(resp.Files[0].Matches) != 1 || resp.Files[0].Matches[0].Line != 2 {
+		t.Fatalf("expected exactly one case-sensitive match on line 2: %+v", resp.Files)
+	}
+}
+
+func TestSearchFilesRegex(t *testing.T) {
+	files := map[string]string{
+		"a.md": "foo123\nfoobar\nbaz456\n",
+	}
+	paths := []string{"a.md"}
+	read := func(p string) ([]byte, error) { return []byte(files[p]), nil }
+
+	resp, err := searchFiles(paths, `foo\d+`, searchOptions{Regex: true}, 10, read)
+	if err != nil {
+		t.Fatalf("searchFiles: %v", err)
+	}
+	if len(resp.Files) != 1 || len(resp.Files[0].Matches) != 1 || resp.Files[0].Matches[0].Line != 1 {
+		t.Fatalf("expected exactly one regex match on line 1: %+v", resp.Files)
+	}
+
+	if _, err := searchFiles(paths, `foo(`, searchOptions{Regex: true}, 10, read); err == nil {
+		t.Fatal("expected an error for an invalid regex")
+	}
+}
+
 func TestSearchFilesScanLimitTruncates(t *testing.T) {
 	files := map[string]string{"a.md": "needle\n", "b.md": "needle\n"}
 	paths := []string{"a.md", "b.md"}
 	read := func(p string) ([]byte, error) { return []byte(files[p]), nil }
 
-	resp := searchFiles(paths, "needle", 1, read)
+	resp, err := searchFiles(paths, "needle", searchOptions{}, 1, read)
+	if err != nil {
+		t.Fatalf("searchFiles: %v", err)
+	}
 	if !resp.Truncated {
 		t.Fatal("expected Truncated when scanLimit stops before all paths are read")
 	}
@@ -86,7 +138,10 @@ func TestSearchFilesUnreadableFileSkipped(t *testing.T) {
 		}
 		return []byte("needle\n"), nil
 	}
-	resp := searchFiles(paths, "needle", 10, read)
+	resp, err := searchFiles(paths, "needle", searchOptions{}, 10, read)
+	if err != nil {
+		t.Fatalf("searchFiles: %v", err)
+	}
 	if len(resp.Files) != 1 || resp.Files[0].Path != "b.md" {
 		t.Fatalf("expected only b.md to match, got %+v", resp.Files)
 	}
@@ -137,5 +192,42 @@ func TestAPISearchLocal(t *testing.T) {
 	unconf.routes().ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unconfigured search status %d", rr.Code)
+	}
+
+	// case=1: "Keyword" (capitalized) should no longer match.
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/search?q=Keyword&case=1", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("case-sensitive search status %d: %s", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Files) != 0 {
+		t.Fatalf("expected no case-sensitive match for %q, got %+v", "Keyword", resp.Files)
+	}
+
+	// regex=1: a pattern that only a regex engine, not a substring search,
+	// would match.
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/search?q="+url.QueryEscape(`key\w+`)+"&regex=1", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("regex search status %d: %s", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Files) != 1 || resp.Files[0].Path != "docs/guide.md" {
+		t.Fatalf("unexpected regex result: %+v", resp)
+	}
+
+	// regex=1 with an invalid pattern is a client error, not a crash.
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/search?q="+url.QueryEscape("key(")+"&regex=1", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid regex status %d: %s", rr.Code, rr.Body.String())
 	}
 }

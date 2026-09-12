@@ -354,12 +354,14 @@ func (s *viewServer) handleAsset(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, filepath.Base(abs), st.ModTime(), f)
 }
 
-// handleSearch answers GET /api/search?q=... with every Markdown file under
-// the current root whose content contains q (case-insensitive substring),
-// each with a few matching lines. See searchFiles in search.go for the
-// scanning and result-shaping logic; this handler only supplies the file list
-// and the per-file reader for whichever kind of root is current, local or
-// GitHub.
+// handleSearch answers GET /api/search?q=...&case=1&regex=1 with every
+// Markdown file under the current root whose content matches q, each with a
+// few matching lines. By default q is a case-insensitive substring; case=1
+// makes it case-sensitive and regex=1 interprets q as a Go regular
+// expression (RE2 syntax). See searchFiles in search.go for the scanning and
+// result-shaping logic; this handler only parses the request and supplies
+// the file list and the per-file reader for whichever kind of root is
+// current, local or GitHub.
 func (s *viewServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -376,6 +378,10 @@ func (s *viewServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if len(query) > 200 {
 		http.Error(w, "query too long", http.StatusBadRequest)
 		return
+	}
+	opts := searchOptions{
+		CaseSensitive: isTruthyParam(r.URL.Query().Get("case")),
+		Regex:         isTruthyParam(r.URL.Query().Get("regex")),
 	}
 
 	root, _ := s.state()
@@ -397,7 +403,12 @@ func (s *viewServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			return s.ghClient.ReadFile(gh.Owner, gh.Repo, gh.Ref, repoPath)
 		}
-		writeJSON(w, searchFiles(paths, query, limit, read))
+		resp, err := searchFiles(paths, query, opts, limit, read)
+		if err != nil {
+			http.Error(w, "invalid regex: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, resp)
 		return
 	}
 
@@ -413,7 +424,24 @@ func (s *viewServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		return os.ReadFile(abs)
 	}
-	writeJSON(w, searchFiles(paths, query, maxScanFilesLocal, read))
+	resp, err := searchFiles(paths, query, opts, maxScanFilesLocal, read)
+	if err != nil {
+		http.Error(w, "invalid regex: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, resp)
+}
+
+// isTruthyParam reports whether a query-string flag value means "on":
+// "1", "true" or "yes" (case-insensitive); everything else, including an
+// absent parameter, means "off".
+func isTruthyParam(v string) bool {
+	switch strings.ToLower(v) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 // handleSetFolder retargets the running server at a different directory

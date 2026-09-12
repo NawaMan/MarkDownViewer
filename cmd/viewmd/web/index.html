@@ -82,14 +82,28 @@ body.sidebar-resizing #content { pointer-events: none; }
   color: var(--muted); margin: .4rem .85rem; font-weight: 600;
 }
 /* ── sidebar search (file-name filter + content search) ─── */
-#sidebar-search { padding: 0 .85rem .5rem; }
+#sidebar-search { padding: 0 .85rem .5rem; display: flex; gap: .3rem; align-items: center; }
 #sidebar-search-input {
-  width: 100%; box-sizing: border-box;
+  flex: 1 1 auto; min-width: 0; box-sizing: border-box;
   font: inherit; font-size: .82rem;
   padding: .4rem .55rem; border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--fg);
 }
 #sidebar-search-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+#sidebar-search.invalid #sidebar-search-input { border-color: var(--danger); }
+.search-error { margin: -.2rem .85rem .5rem; color: var(--danger); font-size: .78rem; }
+.search-error[hidden] { display: none; }
+.search-toggle {
+  flex: 0 0 auto;
+  border: 1px solid var(--border); background: transparent; color: var(--fg);
+  font: inherit; font-size: .72rem; font-weight: 600; line-height: 1;
+  padding: .35rem .45rem; border-radius: 6px; cursor: pointer;
+}
+.search-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.search-toggle.active {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
 #tree-empty-msg {
   margin: .3rem .85rem; color: var(--muted); font-size: .8rem;
 }
@@ -279,13 +293,19 @@ body.sidebar-resizing #content { pointer-events: none; }
   background: var(--bg); color: var(--fg);
 }
 #find-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+#find-bar.invalid #find-input { border-color: var(--danger); }
 #find-count { flex: 0 0 auto; color: var(--muted); font-size: .78rem; min-width: 3.2em; text-align: right; }
+#find-bar.invalid #find-count { color: var(--danger); }
 #find-bar button {
   flex: 0 0 auto; border: 1px solid var(--border); background: transparent; color: var(--fg);
   font: inherit; font-size: .85rem; line-height: 1; padding: .3rem .5rem; border-radius: 6px;
   cursor: pointer;
 }
 #find-bar button:hover { border-color: var(--accent); color: var(--accent); }
+#find-bar button.active {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
 #content mark.hit { background: var(--sel); color: inherit; border-radius: 2px; }
 #content mark.hit.current { background: var(--accent); color: var(--bg); }
 
@@ -422,7 +442,12 @@ img { max-width: 100%; }
     <div id="sidebar-search">
       <input type="search" id="sidebar-search-input" autocomplete="off" spellcheck="false"
              placeholder="Search files and content…" aria-label="Search files and content">
+      <button type="button" id="sidebar-search-case-btn" class="search-toggle"
+              title="Match case" aria-pressed="false" aria-label="Match case">Aa</button>
+      <button type="button" id="sidebar-search-regex-btn" class="search-toggle"
+              title="Regular expression" aria-pressed="false" aria-label="Regular expression">.*</button>
     </div>
+    <div class="search-error" id="sidebar-search-error" hidden></div>
     <h2>Files</h2>
     <ul id="tree"></ul>
     <div id="tree-empty-msg" hidden>No file names match.</div>
@@ -437,6 +462,8 @@ img { max-width: 100%; }
     <div id="find-bar" hidden role="search" aria-label="Find in file">
       <input type="text" id="find-input" autocomplete="off" spellcheck="false"
              placeholder="Find in file" aria-label="Find in file">
+      <button type="button" id="find-case-btn" title="Match case" aria-pressed="false" aria-label="Match case">Aa</button>
+      <button type="button" id="find-regex-btn" title="Regular expression" aria-pressed="false" aria-label="Regular expression">.*</button>
       <span id="find-count" aria-live="polite"></span>
       <button type="button" id="find-prev" title="Previous match (Shift+Enter)">‹</button>
       <button type="button" id="find-next" title="Next match (Enter)">›</button>
@@ -466,8 +493,14 @@ img { max-width: 100%; }
   var findPrevBtn = document.getElementById("find-prev");
   var findNextBtn = document.getElementById("find-next");
   var findCloseBtn = document.getElementById("find-close");
+  var findCaseBtn = document.getElementById("find-case-btn");
+  var findRegexBtn = document.getElementById("find-regex-btn");
 
   var sidebarSearchInput = document.getElementById("sidebar-search-input");
+  var sidebarSearchBox = document.getElementById("sidebar-search");
+  var sidebarSearchErrorEl = document.getElementById("sidebar-search-error");
+  var sidebarCaseBtn = document.getElementById("sidebar-search-case-btn");
+  var sidebarRegexBtn = document.getElementById("sidebar-search-regex-btn");
   var treeEmptyMsg = document.getElementById("tree-empty-msg");
   var contentMatchesBox = document.getElementById("content-matches");
   var contentMatchesList = document.getElementById("content-matches-list");
@@ -490,6 +523,41 @@ img { max-width: 100%; }
 
   function escapeRegExp(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  // Wires a "Aa" / ".*" style toggle button: click flips its pressed state
+  // and re-runs onChange, shared by the in-page find bar and the sidebar
+  // search box so both get case-sensitive and regex matching the same way.
+  function initToggleBtn(btn, onChange) {
+    btn.addEventListener("click", function () {
+      var active = !btn.classList.contains("active");
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+      onChange();
+    });
+  }
+
+  // Builds a case-insensitive-by-default text matcher: a plain substring
+  // search, or (when regex is set) query interpreted as a regular
+  // expression. Returns {test} on success or {error} when query is not a
+  // valid regex, so callers can show that instead of pretending it matched.
+  function buildMatcher(query, opts) {
+    if (!query) return { test: null, error: null };
+    if (opts.regex) {
+      try {
+        var re = new RegExp(query, opts.caseSensitive ? "" : "i");
+        return { test: function (s) { return re.test(s); }, error: null };
+      } catch (e) {
+        return { test: null, error: e.message };
+      }
+    }
+    var needle = opts.caseSensitive ? query : query.toLowerCase();
+    return {
+      test: function (s) {
+        return (opts.caseSensitive ? s : s.toLowerCase()).indexOf(needle) >= 0;
+      },
+      error: null
+    };
   }
 
   // Collapsed folders are stored by path, so the default (absent) state is
@@ -602,12 +670,14 @@ img { max-width: 100%; }
   }
 
   // ── find in the currently rendered file ────────────────
-  // Wraps every case-insensitive occurrence of a query in the rendered
-  // #content in <mark class="hit">, tracks which one is "current", and can
-  // step between them. State lives entirely in the `matches` array of <mark>
-  // elements; `hardReset` (no DOM work) is what renderMarkdown calls on every
-  // fresh file load, since #content's old subtree — marks included — is
-  // already gone by the time it runs.
+  // Wraps every occurrence of a query in the rendered #content in
+  // <mark class="hit">, tracks which one is "current", and can step between
+  // them. Matching is case-insensitive substring by default; the case and
+  // regex toggle buttons switch run() to case-sensitive and/or regex mode.
+  // State lives entirely in the `matches` array of <mark> elements;
+  // `hardReset` (no DOM work) is what renderMarkdown calls on every fresh
+  // file load, since #content's old subtree — marks included — is already
+  // gone by the time it runs.
   var finder = (function () {
     var matches = [];
     var current = -1;
@@ -631,10 +701,19 @@ img { max-width: 100%; }
       hardReset();
     }
 
-    function run(query) {
+    // opts: { caseSensitive, regex }. Returns { count, error }: error is set
+    // (and nothing is highlighted) when regex mode's query is not a valid
+    // regular expression.
+    function run(query, opts) {
       clear();
-      if (!query) return 0;
-      var lowerQuery = query.toLowerCase();
+      if (!query) return { count: 0, error: null };
+      var re;
+      try {
+        var pattern = opts.regex ? query : escapeRegExp(query);
+        re = new RegExp(pattern, opts.caseSensitive ? "g" : "gi");
+      } catch (e) {
+        return { count: 0, error: e.message };
+      }
       var walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, null);
       var textNodes = [];
       var node;
@@ -642,25 +721,26 @@ img { max-width: 100%; }
 
       textNodes.forEach(function (textNode) {
         var text = textNode.nodeValue;
-        var lowerText = text.toLowerCase();
-        var pos = lowerText.indexOf(lowerQuery);
-        if (pos < 0) return;
+        re.lastIndex = 0;
+        var m = re.exec(text);
+        if (!m) return;
         var frag = document.createDocumentFragment();
         var lastEnd = 0;
-        while (pos >= 0) {
-          frag.appendChild(document.createTextNode(text.slice(lastEnd, pos)));
+        while (m) {
+          frag.appendChild(document.createTextNode(text.slice(lastEnd, m.index)));
           var mark = document.createElement("mark");
           mark.className = "hit";
-          mark.textContent = text.slice(pos, pos + query.length);
+          mark.textContent = m[0];
           frag.appendChild(mark);
           matches.push(mark);
-          lastEnd = pos + query.length;
-          pos = lowerText.indexOf(lowerQuery, lastEnd);
+          lastEnd = m.index + m[0].length;
+          if (m[0].length === 0) re.lastIndex++; // never stall on a zero-width match
+          m = re.exec(text);
         }
         frag.appendChild(document.createTextNode(text.slice(lastEnd)));
         textNode.parentNode.replaceChild(frag, textNode);
       });
-      return matches.length;
+      return { count: matches.length, error: null };
     }
 
     function goTo(i) {
@@ -684,6 +764,10 @@ img { max-width: 100%; }
     };
   })();
 
+  function findOpts() {
+    return { caseSensitive: findCaseBtn.classList.contains("active"), regex: findRegexBtn.classList.contains("active") };
+  }
+
   function updateFindCount() {
     if (!findInput.value) { findCountEl.textContent = ""; return; }
     var n = finder.count();
@@ -691,7 +775,12 @@ img { max-width: 100%; }
   }
 
   function runFind() {
-    finder.run(findInput.value);
+    var result = finder.run(findInput.value, findOpts());
+    findBar.classList.toggle("invalid", !!result.error);
+    if (result.error) {
+      findCountEl.textContent = "Invalid regex";
+      return;
+    }
     if (finder.count()) finder.goTo(0);
     updateFindCount();
   }
@@ -708,6 +797,7 @@ img { max-width: 100%; }
 
   function closeFindBar() {
     findBar.hidden = true;
+    findBar.classList.remove("invalid");
     finder.clear();
     findCountEl.textContent = "";
   }
@@ -727,6 +817,8 @@ img { max-width: 100%; }
   findNextBtn.addEventListener("click", function () { finder.next(); updateFindCount(); findInput.focus(); });
   findCloseBtn.addEventListener("click", closeFindBar);
   findBtn.addEventListener("click", function () { openFindBar(); });
+  initToggleBtn(findCaseBtn, function () { runFind(); findInput.focus(); });
+  initToggleBtn(findRegexBtn, function () { runFind(); findInput.focus(); });
 
   // Ctrl/Cmd+F opens the in-page find bar instead of the browser's own —
   // #content is a single page's worth of rendered Markdown, so a scoped find
@@ -1092,19 +1184,20 @@ img { max-width: 100%; }
   // since a content hit's file name may not contain the query at all.
 
   // Hides/reveals <li>s in a tree <ul> so only files (and folders that
-  // contain one) whose name matches query survive; a folder whose own name
-  // matches is shown in full, its own query passed down as "" so every
-  // descendant renders unfiltered. Temporarily expands (without touching
-  // collapsedDirs) any folder that needs to reveal a match; applyCollapsedState
-  // puts real collapse state back once the query is cleared. Returns whether
-  // anything in `ul` is visible.
-  function applyTreeFilter(ul, query) {
+  // contain one) whose name passes test survive; a folder whose own name
+  // passes is shown in full, with null passed down so every descendant
+  // renders unfiltered. test is null when there is no active filter at all.
+  // Temporarily expands (without touching collapsedDirs) any folder that
+  // needs to reveal a match; applyCollapsedState puts real collapse state
+  // back once the query is cleared. Returns whether anything in `ul` is
+  // visible.
+  function applyTreeFilter(ul, test) {
     var anyVisible = false;
     Array.prototype.forEach.call(ul.children, function (li) {
       var first = li.firstElementChild;
       if (!first) { li.hidden = false; return; }
       if (first.classList.contains("file")) {
-        var match = !query || first.getAttribute("data-path").toLowerCase().indexOf(query) >= 0;
+        var match = !test || test(first.getAttribute("data-path"));
         li.hidden = !match;
         if (match) anyVisible = true;
       } else if (first.classList.contains("up-row")) {
@@ -1112,13 +1205,13 @@ img { max-width: 100%; }
       } else if (first.classList.contains("dir-row")) {
         var label = first.querySelector(".dir-label");
         var sub = li.children[1];
-        var dirMatch = !query || (label.getAttribute("data-dir") || "").toLowerCase().indexOf(query) >= 0;
-        var childVisible = sub ? applyTreeFilter(sub, dirMatch ? "" : query) : false;
+        var dirMatch = !test || test(label.getAttribute("data-dir") || "");
+        var childVisible = sub ? applyTreeFilter(sub, dirMatch ? null : test) : false;
         var visible = dirMatch || childVisible;
         li.hidden = !visible;
         if (visible) {
           anyVisible = true;
-          if (query && sub) setOpen(label, sub, true);
+          if (test && sub) setOpen(label, sub, true);
         }
       }
     });
@@ -1141,30 +1234,71 @@ img { max-width: 100%; }
     });
   }
 
+  function sidebarSearchOpts() {
+    return { caseSensitive: sidebarCaseBtn.classList.contains("active"), regex: sidebarRegexBtn.classList.contains("active") };
+  }
+
+  // Returns null (and shows the error) when the current query is an invalid
+  // regex, so runTreeFilter and runContentSearch can both bail the same way
+  // instead of pretending an unusable query matched nothing.
+  function currentSidebarMatcher(query) {
+    var m = buildMatcher(query, sidebarSearchOpts());
+    sidebarSearchBox.classList.toggle("invalid", !!m.error);
+    sidebarSearchErrorEl.hidden = !m.error;
+    sidebarSearchErrorEl.textContent = m.error ? "Invalid regex: " + m.error : "";
+    return m;
+  }
+
   function runTreeFilter(rawQuery) {
-    var query = rawQuery.trim().toLowerCase();
+    var query = rawQuery.trim();
     if (!query) {
-      applyTreeFilter(treeEl, "");
+      sidebarSearchBox.classList.remove("invalid");
+      sidebarSearchErrorEl.hidden = true;
+      sidebarSearchErrorEl.textContent = "";
+      applyTreeFilter(treeEl, null);
       applyCollapsedState(treeEl);
       treeEmptyMsg.hidden = true;
       return;
     }
-    var anyVisible = applyTreeFilter(treeEl, query);
+    var m = currentSidebarMatcher(query);
+    if (m.error) {
+      applyTreeFilter(treeEl, null);
+      applyCollapsedState(treeEl);
+      treeEmptyMsg.hidden = true;
+      return;
+    }
+    var anyVisible = applyTreeFilter(treeEl, m.test);
     treeEmptyMsg.hidden = anyVisible;
   }
 
-  function highlightSnippet(text, query) {
+  function highlightSnippet(text, query, opts) {
     var escaped = escapeHTML(text);
     if (!query) return escaped;
-    var re = new RegExp("(" + escapeRegExp(query) + ")", "ig");
+    var pattern = (opts && opts.regex) ? query : escapeRegExp(query);
+    var flags = (opts && opts.caseSensitive) ? "g" : "ig";
+    var re;
+    try { re = new RegExp("(" + pattern + ")", flags); } catch (e) { return escaped; }
     return escaped.replace(re, "<mark>$1</mark>");
+  }
+
+  // Sets the in-page find bar's case/regex toggles to match opts, so a
+  // search hit found under (say) regex mode reopens find in the same mode
+  // instead of treating the raw query as a plain string.
+  function setFindOpts(opts) {
+    var caseOn = !!(opts && opts.caseSensitive);
+    var regexOn = !!(opts && opts.regex);
+    findCaseBtn.classList.toggle("active", caseOn);
+    findCaseBtn.setAttribute("aria-pressed", caseOn ? "true" : "false");
+    findRegexBtn.classList.toggle("active", regexOn);
+    findRegexBtn.setAttribute("aria-pressed", regexOn ? "true" : "false");
   }
 
   // Opens a file a search result pointed at and jumps straight to the match,
   // reusing the in-page find bar so the reader can also step through any
   // other occurrences in the file from there.
-  function openSearchHit(path, query) {
+  function openSearchHit(path, query, opts) {
     loadFile(path, "", "push").then(function () {
+      setFindOpts(opts);
       openFindBar(query);
     });
   }
@@ -1174,7 +1308,7 @@ img { max-width: 100%; }
     contentMatchesList.innerHTML = "";
   }
 
-  function renderContentMatches(query, data) {
+  function renderContentMatches(query, data, opts) {
     contentMatchesList.innerHTML = "";
     if (!data || !data.files || !data.files.length) {
       contentMatchesBox.hidden = true;
@@ -1188,8 +1322,8 @@ img { max-width: 100%; }
       fileBtn.type = "button";
       fileBtn.className = "match-file-btn";
       fileBtn.title = fileRes.path;
-      fileBtn.innerHTML = highlightSnippet(fileRes.path, query);
-      fileBtn.addEventListener("click", function () { openSearchHit(fileRes.path, query); });
+      fileBtn.innerHTML = highlightSnippet(fileRes.path, query, opts);
+      fileBtn.addEventListener("click", function () { openSearchHit(fileRes.path, query, opts); });
       fileLi.appendChild(fileBtn);
 
       var snippetsUl = document.createElement("ul");
@@ -1200,8 +1334,8 @@ img { max-width: 100%; }
         sBtn.type = "button";
         sBtn.className = "match-snippet";
         sBtn.title = m.text;
-        sBtn.innerHTML = highlightSnippet(m.text, query);
-        sBtn.addEventListener("click", function () { openSearchHit(fileRes.path, query); });
+        sBtn.innerHTML = highlightSnippet(m.text, query, opts);
+        sBtn.addEventListener("click", function () { openSearchHit(fileRes.path, query, opts); });
         sLi.appendChild(sBtn);
         snippetsUl.appendChild(sLi);
       });
@@ -1219,25 +1353,36 @@ img { max-width: 100%; }
   var CONTENT_SEARCH_MIN_LEN = 2;
   var contentSearchAbort = null;
 
-  var runContentSearch = debounce(function (query) {
+  function performContentSearch(query) {
     if (contentSearchAbort) contentSearchAbort.abort();
     if (query.length < CONTENT_SEARCH_MIN_LEN) {
       clearContentMatches();
       return;
     }
+    var opts = sidebarSearchOpts();
     var controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
     contentSearchAbort = controller;
-    fetch("/api/search?q=" + encodeURIComponent(query), controller ? { signal: controller.signal } : {})
+    var url = "/api/search?q=" + encodeURIComponent(query);
+    if (opts.caseSensitive) url += "&case=1";
+    if (opts.regex) url += "&regex=1";
+    fetch(url, controller ? { signal: controller.signal } : {})
       .then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error(t || r.statusText); });
         return r.json();
       })
-      .then(function (data) { renderContentMatches(query, data); })
+      .then(function (data) { renderContentMatches(query, data, opts); })
       .catch(function (e) {
         if (e && e.name === "AbortError") return;
         clearContentMatches();
+        if (opts.regex) {
+          sidebarSearchBox.classList.add("invalid");
+          sidebarSearchErrorEl.hidden = false;
+          sidebarSearchErrorEl.textContent = "Invalid regex: " + (e && e.message ? e.message : "search failed");
+        }
       });
-  }, 250);
+  }
+
+  var runContentSearch = debounce(performContentSearch, 250);
 
   // Clears the search box and everything it drove — called whenever the tree
   // itself is about to be rebuilt (folder change), since a stale query would
@@ -1246,14 +1391,30 @@ img { max-width: 100%; }
     sidebarSearchInput.value = "";
     treeEmptyMsg.hidden = true;
     clearContentMatches();
+    sidebarSearchBox.classList.remove("invalid");
+    sidebarSearchErrorEl.hidden = true;
+    sidebarSearchErrorEl.textContent = "";
     if (contentSearchAbort) contentSearchAbort.abort();
   }
 
-  sidebarSearchInput.addEventListener("input", function () {
+  // Re-applies the tree filter and (re)issues the content search for the
+  // current input value; shared by typing (debounced) and the case/regex
+  // toggle buttons (immediate, so flipping a toggle feels instant).
+  function rerunSidebarSearch(immediate) {
     var raw = sidebarSearchInput.value;
     runTreeFilter(raw);
-    runContentSearch(raw.trim());
-  });
+    var trimmed = raw.trim();
+    if (sidebarSearchBox.classList.contains("invalid")) {
+      clearContentMatches();
+      if (contentSearchAbort) contentSearchAbort.abort();
+      return;
+    }
+    if (immediate) performContentSearch(trimmed); else runContentSearch(trimmed);
+  }
+
+  sidebarSearchInput.addEventListener("input", function () { rerunSidebarSearch(false); });
+  initToggleBtn(sidebarCaseBtn, function () { rerunSidebarSearch(true); });
+  initToggleBtn(sidebarRegexBtn, function () { rerunSidebarSearch(true); });
   sidebarSearchInput.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && sidebarSearchInput.value) {
       e.preventDefault();
