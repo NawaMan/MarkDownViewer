@@ -264,7 +264,7 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: retarget:", err)
 				return 1
 			}
-			fmt.Printf("viewmd: pid %d now serving %s\n", pid, cfg.Folder)
+			fmt.Printf("viewmd: pid %d now serving %s (port %d)\n", pid, cfg.Folder, cfg.Port)
 			if cfg.InitialMd != "" {
 				fmt.Printf("  initial file: %s\n", cfg.InitialMd)
 			}
