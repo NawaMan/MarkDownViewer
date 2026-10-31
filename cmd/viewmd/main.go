@@ -4,6 +4,7 @@
 // viewmd serves a Markdown directory tree over HTTP with an embedded viewer.
 //
 //	viewmd [--folder DIR] [--port N] [--bind ADDR] [--md FILE] [--expose [HOSTPORT]]
+//	viewmd FILE [flags]   (== --folder <FILE's folder> --md <FILE>)
 package main
 
 import (
@@ -41,7 +42,11 @@ func main() {
 func run(args []string) int {
 	// A leading bare word is either a reserved subcommand or a folder shorthand
 	// (`viewmd DIR` == `viewmd --folder DIR`); flags may still follow it, as in
-	// `viewmd stop --port 9000` or `viewmd ./docs --port 9000`.
+	// `viewmd stop --port 9000` or `viewmd ./docs --port 9000`. A bare word
+	// naming a file rather than a folder is passed along as the folder too:
+	// resolveFreshRoot / handleSetFolder (server.go) split it into its parent
+	// folder plus --md, since only they know what a relative path is
+	// relative to.
 	var command, positionalFolder string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
@@ -92,6 +97,7 @@ func run(args []string) int {
 Usage:
   viewmd [flags]
   viewmd DIR [flags]
+  viewmd FILE [flags]
   viewmd <command> [flags]
 
 Commands:
@@ -105,7 +111,9 @@ Flags:
   --folder DIR       Root directory to scan, or a GitHub URL such as
                      https://github.com/OWNER/REPO/tree/BRANCH/PATH
                      (default "."); DIR alone (before any flags) is
-                     shorthand for --folder DIR
+                     shorthand for --folder DIR, and FILE alone (a local
+                     file or a GitHub .../blob/BRANCH/PATH URL) for
+                     --folder <its folder> --md FILE
   --ask               Prompt for the base folder/URL instead of using
                      --folder: in the browser once it opens, or right here
                      when --server-only (foreground only; cannot combine
@@ -134,7 +142,9 @@ Examples:
   viewmd --folder docs --port 8765 --expose
   viewmd --md README.md --expose 18765
   viewmd --folder ./docs --daemon        # background; --port picks the instance
+  viewmd docs/intro.md                   # serve docs/, open intro.md
   viewmd https://github.com/NawaMan/CodingBooth/tree/main/docs
+  viewmd https://github.com/NawaMan/CodingBooth/blob/main/README.md
   viewmd --folder https://github.com/OWNER/REPO --github-token ghp_xxx
   viewmd status
   viewmd stop --port 9000

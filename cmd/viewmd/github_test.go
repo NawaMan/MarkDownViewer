@@ -48,6 +48,32 @@ func TestParseGitHubURLRejectsNonGitHub(t *testing.T) {
 	}
 }
 
+func TestSplitFileTargetGitHub(t *testing.T) {
+	cases := []struct {
+		in, wantFolder, wantMd string
+	}{
+		{"https://github.com/o/r/blob/main/docs/guide.md", "https://github.com/o/r/tree/main/docs", "guide.md"},
+		{"github.com/o/r/blob/main/README.md", "https://github.com/o/r/tree/main", "README.md"},
+		{"https://github.com/o/r/blob/v1/a/b/c.md?plain=1#intro", "https://github.com/o/r/tree/v1/a/b", "c.md"},
+		// Not a blob URL: unchanged.
+		{"https://github.com/o/r/tree/main/docs", "https://github.com/o/r/tree/main/docs", ""},
+		{"./docs/blob/main/x.md", "./docs/blob/main/x.md", ""},
+	}
+	for _, c := range cases {
+		folder, md, err := splitFileTargetGitHub(c.in, "")
+		if err != nil {
+			t.Errorf("splitFileTargetGitHub(%q): %v", c.in, err)
+			continue
+		}
+		if folder != c.wantFolder || md != c.wantMd {
+			t.Errorf("splitFileTargetGitHub(%q) = (%q, %q), want (%q, %q)", c.in, folder, md, c.wantFolder, c.wantMd)
+		}
+	}
+	if _, _, err := splitFileTargetGitHub("https://github.com/o/r/blob/main/README.md", "other.md"); err == nil {
+		t.Error("blob URL with md: want an error")
+	}
+}
+
 func TestGithubCanonicalURLRoundTrip(t *testing.T) {
 	u := githubCanonicalURL("NawaMan", "CodingBooth", "main", "docs/guides")
 	want := "https://github.com/NawaMan/CodingBooth/tree/main/docs/guides"
@@ -368,6 +394,16 @@ func TestGithubBackedSetFolder(t *testing.T) {
 	newRoot, _ := s.state()
 	if newRoot != githubCanonicalURL("o", "r", "main", "docs") {
 		t.Fatalf("root = %q", newRoot)
+	}
+
+	// A blob URL retargets to the file's folder and opens it there.
+	rr = postFolder(t, h, "https://github.com/o/r/blob/main/docs/guide.md")
+	if rr.Code != 200 {
+		t.Fatalf("blob status %d: %s", rr.Code, rr.Body.String())
+	}
+	newRoot, initial := s.state()
+	if newRoot != githubCanonicalURL("o", "r", "main", "docs") || initial != "guide.md" {
+		t.Fatalf("after blob: state = (%q, %q)", newRoot, initial)
 	}
 
 	// A different repo/ref/owner is outside the starting repository.

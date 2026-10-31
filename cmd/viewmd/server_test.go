@@ -303,12 +303,35 @@ func TestSetFolderRejectsOutsideStart(t *testing.T) {
 	}
 }
 
-func TestSetFolderRejectsFile(t *testing.T) {
-	s, _ := testServer(t)
+// A file retargets to its parent folder and opens that file, relative to
+// the starting folder like any other relative folder.
+func TestSetFolderOnFileOpensItInItsFolder(t *testing.T) {
+	s, root := testServer(t)
 	h := s.routes()
-	rr := postFolder(t, h, "README.md")
+	sub := filepath.Join(root, "docs")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "intro.md"), []byte("# Intro\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := postFolder(t, h, "docs/intro.md")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	newRoot, initial := s.state()
+	if newRoot != sub || initial != "intro.md" {
+		t.Fatalf("state = (%q, %q), want (%q, %q)", newRoot, initial, sub, "intro.md")
+	}
+
+	// A file names what to open first itself, so it conflicts with Md.
+	body, _ := json.Marshal(setFolderRequest{Folder: "README.md", Md: "README.md"})
+	req := httptest.NewRequest(http.MethodPost, "/api/folder", bytes.NewReader(body))
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status %d, want 400 for a file, not a directory", rr.Code)
+		t.Fatalf("file + md: status %d, want 400", rr.Code)
 	}
 }
 
@@ -411,8 +434,16 @@ func TestResolveFreshRootLocal(t *testing.T) {
 		t.Fatalf("resolveFreshRoot = (%q, %q), want (%q, %q)", rootAbs, initial, root, "GUIDE.md")
 	}
 
-	if _, _, err := resolveFreshRoot(gh, filepath.Join(root, "GUIDE.md"), ""); err == nil {
-		t.Fatal("resolveFreshRoot on a file, want an error")
+	// A file means its folder, opened at that file.
+	rootAbs, initial, err = resolveFreshRoot(gh, filepath.Join(root, "GUIDE.md"), "")
+	if err != nil {
+		t.Fatalf("resolveFreshRoot on a file: %v", err)
+	}
+	if rootAbs != root || initial != "GUIDE.md" {
+		t.Fatalf("resolveFreshRoot on a file = (%q, %q), want (%q, %q)", rootAbs, initial, root, "GUIDE.md")
+	}
+	if _, _, err := resolveFreshRoot(gh, filepath.Join(root, "GUIDE.md"), "GUIDE.md"); err == nil {
+		t.Fatal("resolveFreshRoot on a file with --md, want an error")
 	}
 
 	if _, _, err := resolveFreshRoot(gh, filepath.Join(root, "does-not-exist"), ""); err == nil {

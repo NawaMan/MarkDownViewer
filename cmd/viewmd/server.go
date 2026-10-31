@@ -491,6 +491,15 @@ func (s *viewServer) handleSetFolder(w http.ResponseWriter, r *http.Request) {
 		// this one as an ordinary retarget bounded by whichever root won.
 	}
 
+	// A file (a GitHub blob URL here, a local file once resolved below)
+	// retargets to its parent folder and opens the file there.
+	folder, md, err := splitFileTargetGitHub(req.Folder, req.Md)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.Folder, req.Md = folder, md
+
 	rootAbs, err := s.resolveWithinStart(req.Folder)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -507,6 +516,13 @@ func (s *viewServer) handleSetFolder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
+		// rootAbs is within startRoot and startRoot is a directory, so a
+		// file's parent is still within it.
+		rootAbs, req.Md, err = splitFileTargetLocal(rootAbs, req.Md)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		st, err := os.Stat(rootAbs)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -604,6 +620,10 @@ func (s *viewServer) normalizeInitialMd(rootAbs, md string) (string, error) {
 // ordinary CLI startup, and handleSetFolder uses it for a server that
 // deferred that pick to the browser instead.
 func resolveFreshRoot(ghClient *githubClient, folder, md string) (string, string, error) {
+	folder, md, err := splitFileTargetGitHub(folder, md)
+	if err != nil {
+		return "", "", err
+	}
 	if gh, ok := parseGitHubURL(folder); ok {
 		ref := gh.Ref
 		if ref == "" {
@@ -632,6 +652,10 @@ func resolveFreshRoot(ghClient *githubClient, folder, md string) (string, string
 	if err != nil {
 		return "", "", fmt.Errorf("folder: %w", err)
 	}
+	rootAbs, md, err = splitFileTargetLocal(rootAbs, md)
+	if err != nil {
+		return "", "", err
+	}
 	st, err := os.Stat(rootAbs)
 	if err != nil {
 		return "", "", fmt.Errorf("folder: %w", err)
@@ -644,6 +668,23 @@ func resolveFreshRoot(ghClient *githubClient, folder, md string) (string, string
 		return "", "", err
 	}
 	return rootAbs, initial, nil
+}
+
+// splitFileTargetLocal turns an absolute folder that names a regular file
+// into its parent directory plus the file as the initial Markdown file, so
+// `viewmd docs/intro.md` means `--folder docs --md intro.md`. Anything else
+// — a directory, or a path that does not exist — comes back unchanged for
+// the caller's own checks to judge. md must be empty when folder is a file:
+// the file already says what to open first.
+func splitFileTargetLocal(folderAbs, md string) (string, string, error) {
+	st, err := os.Stat(folderAbs)
+	if err != nil || !st.Mode().IsRegular() {
+		return folderAbs, md, nil
+	}
+	if strings.TrimSpace(md) != "" {
+		return "", "", fmt.Errorf("%s is a file; it cannot be combined with --md", folderAbs)
+	}
+	return filepath.Dir(folderAbs), filepath.Base(folderAbs), nil
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

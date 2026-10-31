@@ -18,7 +18,9 @@ Browse a folder of Markdown files in your browser — single Go binary, embedded
   to jump straight there. **Find** (or **Ctrl/Cmd+F**) searches within the
   open file, highlighting every match with a running count and Enter/Shift+Enter
   to step through them.
-- Open a default file with `--md`
+- Open a default file with `--md`, or just `viewmd path/to/file.md` — that
+  serves the file's folder and opens the file (a GitHub `.../blob/...` file
+  link works the same way)
 - **`--ask`**: prompt for the base folder or GitHub URL instead of requiring
   `--folder`/`DIR` up front — in the browser once it opens (a modal, prefilled
   with the default), or in the terminal under `--server-only`; the web UI
@@ -116,6 +118,7 @@ go install github.com/NawaMan/MarkDownViewer/cmd/viewmd@latest
 ```text
 viewmd [flags]
 viewmd DIR [flags]
+viewmd FILE [flags]
 viewmd <command> [flags]
 
 Commands:
@@ -129,7 +132,9 @@ Flags:
   --folder DIR       Root directory to scan, or a GitHub URL such as
                      https://github.com/OWNER/REPO/tree/BRANCH/PATH
                      (default "."); DIR alone (before any flags) is
-                     shorthand for --folder DIR
+                     shorthand for --folder DIR, and FILE alone (a local
+                     file or a GitHub .../blob/BRANCH/PATH URL) for
+                     --folder <its folder> --md FILE
   --ask               Prompt for the base folder/URL instead of using
                      --folder: in the browser once it opens, or right here
                      when --server-only (foreground only; cannot combine
@@ -157,6 +162,7 @@ Examples:
 ```bash
 viewmd --ask                                        # prompt for the base folder/URL
 viewmd --folder ./docs --md intro.md
+viewmd docs/intro.md                                # same thing
 viewmd --md README.md --port 9000
 viewmd --md README.md --server-only                # serve only, no browser
 viewmd --folder . --md README.md --expose          # host port = server port
@@ -173,6 +179,7 @@ instead of the local disk — nothing is cloned or written to disk:
 viewmd https://github.com/NawaMan/CodingBooth/tree/main/docs
 viewmd --folder https://github.com/OWNER/REPO              # default branch, repo root
 viewmd --folder https://github.com/OWNER/REPO/tree/BRANCH/PATH
+viewmd https://github.com/OWNER/REPO/blob/BRANCH/PATH/FILE.md   # its folder, opened at FILE.md
 ```
 
 Everything else works the same way from there: the sidebar, relative
@@ -322,6 +329,7 @@ instance's base folder live instead of failing to bind a second time:
 viewmd /home/nawa --daemon --port 8765   # start; /home/nawa is now the starting folder
 viewmd docs --port 8765                  # same instance, base folder -> /home/nawa/docs
 viewmd manual --port 8765                # base folder -> /home/nawa/manual (relative to the *starting* folder, not to docs)
+viewmd docs/intro.md --port 8765         # base folder -> /home/nawa/docs, showing intro.md
 viewmd / --port 8765                     # refused: outside the starting folder
 ```
 

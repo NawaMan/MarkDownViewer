@@ -113,6 +113,17 @@ func TestPositionalFolderConflictsWithFlag(t *testing.T) {
 	}
 }
 
+// A file argument already names what to open first, so --md conflicts with it.
+func TestPositionalFileConflictsWithMd(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "intro.md")
+	if err := os.WriteFile(file, []byte("# Intro\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{file, "--md", "intro.md", "--port", "18799"}); code != 1 {
+		t.Fatalf("exit = %d, want 1 when both a file argument and --md are given", code)
+	}
+}
+
 // The stop/status commands and their flag aliases must behave identically.
 func TestStopAndStatusCommands(t *testing.T) {
 	dir := t.TempDir()

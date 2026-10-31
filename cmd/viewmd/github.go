@@ -54,6 +54,39 @@ func parseGitHubURL(raw string) (ghRoot, bool) {
 	return ghRoot{Owner: m[1], Repo: m[2], Ref: m[3], Path: strings.Trim(m[4], "/")}, true
 }
 
+// ghBlobURLRe accepts the URL shown in a browser's address bar for a single
+// file:
+//
+//	https://github.com/OWNER/REPO/blob/REF/PATH/TO/FILE.md
+//
+// with the same "no / in REF" limitation as ghURLRe.
+var ghBlobURLRe = regexp.MustCompile(`(?i)^(?:https?://)?github\.com/([^/\s]+)/([^/\s]+)/blob/([^/\s]+)/(.+)$`)
+
+// splitFileTargetGitHub turns a GitHub blob URL in folder into the tree URL
+// of its parent folder plus the file as the initial Markdown file, so that
+// pasting a file's link works like `--folder PARENT --md FILE`. Any other
+// folder comes back unchanged. md must be empty for a blob URL: the URL
+// already names the file to open first.
+func splitFileTargetGitHub(folder, md string) (string, string, error) {
+	raw := strings.TrimSpace(folder)
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	m := ghBlobURLRe.FindStringSubmatch(raw)
+	if m == nil {
+		return folder, md, nil
+	}
+	if strings.TrimSpace(md) != "" {
+		return "", "", fmt.Errorf("%s names a file; it cannot be combined with --md", folder)
+	}
+	filePath := strings.Trim(m[4], "/")
+	dir := path.Dir(filePath)
+	if dir == "." {
+		dir = ""
+	}
+	return githubCanonicalURL(m[1], m[2], m[3], dir), path.Base(filePath), nil
+}
+
 // githubCanonicalURL is the form viewmd reports back for a GitHub root (in
 // /api/config, /api/tree, /api/folder) and the form the sidebar's "set base
 // folder" / ".." controls build by plain string concatenation — see
