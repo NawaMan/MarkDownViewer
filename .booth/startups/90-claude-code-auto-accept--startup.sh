@@ -19,3 +19,43 @@ if [ -f "$settings" ] && command -v jq &>/dev/null; then
         ' "$settings" > "${settings}.tmp" && command mv -f "${settings}.tmp" "$settings"
     fi
 fi
+
+# Mark the project trusted so Claude Code skips its "Is this a project you
+# trust?" gate. That gate is not a permission rule -- no entry in the allow
+# list above can suppress it -- it is project state, recorded per path in
+# ~/.claude.json. And ~/.claude.json is seeded fresh from the host on every
+# start (the settings cache covers ~/.claude/, a directory; this is a file
+# beside it), so the booth's own "yes" is written and then discarded at
+# shutdown. Left alone, the prompt returns on every single start, forever.
+#
+# Stamped here rather than shipped in the seeded file because the path is
+# only known at run time: the code directory is wherever the booth mounted
+# the project, which CODE_NAME can move.
+claude_json="$HOME/.claude.json"
+if command -v jq &>/dev/null; then
+    # Step aside when cache/ or shared/ owns the file: a persisted copy already
+    # carries the answer across restarts, and stamping it would write a
+    # booth-local path back into state the host may also read. Owned means
+    # bind-mounted at its path, or -- on an image with booth--file-sync -- staged
+    # under the file-sync root, whose plain-file copy is synced back out.
+    staged="/var/lib/codingbooth/file-sync$claude_json"
+    if awk -v p="$claude_json" -v s="$staged" '$5 == p || $5 == s { found = 1 } END { exit !found }' \
+        /proc/self/mountinfo 2>/dev/null; then
+        :
+    else
+        # The code dir is the startup script's cwd; fall back for odd layouts.
+        code_dir="${PWD:-}"
+        case "$code_dir" in
+            "$HOME"/*) ;;
+            *) code_dir="$HOME/code" ;;
+        esac
+        # Absent when the credential extension is deselected -- still worth a
+        # file, so trust survives without the host's config being seeded in.
+        [ -f "$claude_json" ] || echo '{}' > "$claude_json"
+        jq --arg d "$code_dir" '
+            .projects[$d].hasTrustDialogAccepted = true
+        ' "$claude_json" > "${claude_json}.tmp" \
+            && command mv -f "${claude_json}.tmp" "$claude_json" \
+            || rm -f "${claude_json}.tmp"
+    fi
+fi
